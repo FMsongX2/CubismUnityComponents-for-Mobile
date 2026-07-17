@@ -262,6 +262,13 @@ namespace Live2D.Cubism.Core
             var positions = positionViews[index];
             var count = UnmanagedDrawables.VertexCounts[index];
 
+            // Zero-vertex drawables have no view to read (IsValid is false for
+            // empty views); that is a valid state, not a shape mismatch.
+            if (count == 0)
+            {
+                return 0;
+            }
+
             if (count < 0 || count > capacity || !positions.IsValid || positions.Length < count * 2)
             {
                 return -1;
