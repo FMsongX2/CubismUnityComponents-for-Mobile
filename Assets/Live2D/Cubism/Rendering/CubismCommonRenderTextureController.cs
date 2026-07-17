@@ -16,12 +16,6 @@ namespace Live2D.Cubism.Rendering
     [ExecuteInEditMode]
     public class CubismCommonRenderTextureController : MonoBehaviour
     {
-        private void Update()
-        {
-            // Reset the flag at the beginning of each frame.
-            CubismOffscreenRenderTextureManager.GetInstance().HasResetThisFrame = false;
-        }
-
         private void OnDestroy()
         {
             CubismOffscreenRenderTextureManager.GetInstance().Release();

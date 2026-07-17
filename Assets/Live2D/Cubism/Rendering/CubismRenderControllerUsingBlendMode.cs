@@ -149,12 +149,23 @@ namespace Live2D.Cubism.Rendering
                         DrawableRenderers.Length + Renderers[i].Offscreen.UnmanagedIndex]);
             }
 
-            var renderers = new List<CubismRenderer>(Renderers);
+            // Reuse the scratch list and result array; this runs on every sort-dirty
+            // frame and the per-call List + ToArray pair was steady-state garbage.
+            _sortScratch ??= new List<CubismRenderer>(Renderers.Length);
+            _sortScratch.Clear();
+            _sortScratch.AddRange(Renderers);
 
-            SortBySortingOrder(renderers);
+            SortBySortingOrder(_sortScratch);
 
-            _sortedRenderers = renderers.ToArray();
+            if (_sortedRenderers == null || _sortedRenderers.Length != _sortScratch.Count)
+            {
+                _sortedRenderers = new CubismRenderer[_sortScratch.Count];
+            }
+
+            _sortScratch.CopyTo(_sortedRenderers);
         }
+
+        private List<CubismRenderer> _sortScratch;
 
         /// <summary>
         /// Sorts the given renderers by their sorting order.

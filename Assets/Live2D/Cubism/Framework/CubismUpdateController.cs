@@ -70,10 +70,6 @@ namespace Live2D.Cubism.Framework
         /// </summary>
         private void LateUpdate()
         {
-            // Reset `CubismOffscreenRenderTextureManager._previousActiveRenderTextureCount` at the beginning of each frame.
-            // This ensures it's reset once per frame before any CubismRenderController OnLateUpdate.
-            CubismOffscreenRenderTextureManager.GetInstance().ResetPreviousActiveCount();
-
             // Cubism late update.
             if(_onLateUpdate != null)
             {

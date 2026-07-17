@@ -68,6 +68,75 @@ namespace Live2D.Cubism.Framework.MotionFade
         /// </summary>
         private bool[] _isFading;
 
+        /// <summary>
+        /// Precomputed curve lookup for one fade motion: destination parameter/part
+        /// index to curve index (-1 when the motion has no curve for it). Replaces
+        /// the per-frame O(destinations x curve ids) string scans in UpdateFade.
+        /// </summary>
+        private sealed class FadeMotionCurveMap
+        {
+            public int[] ParameterCurveIndices;
+            public int[] PartCurveIndices;
+            public int SourceCurveCount;
+        }
+
+        private System.Collections.Generic.Dictionary<CubismFadeMotionData, FadeMotionCurveMap> _fadeMotionCurveMaps;
+        private CubismParameter[] _curveMapParameters;
+        private CubismPart[] _curveMapParts;
+
+
+        private FadeMotionCurveMap GetFadeMotionCurveMap(CubismFadeMotionData fadeMotion)
+        {
+            // Destinations changed identity (model reload) -> all maps are stale.
+            if (_fadeMotionCurveMaps == null
+                || _curveMapParameters != DestinationParameters
+                || _curveMapParts != DestinationParts)
+            {
+                _fadeMotionCurveMaps = new System.Collections.Generic.Dictionary<CubismFadeMotionData, FadeMotionCurveMap>();
+                _curveMapParameters = DestinationParameters;
+                _curveMapParts = DestinationParts;
+            }
+
+            if (_fadeMotionCurveMaps.TryGetValue(fadeMotion, out var map)
+                && map.SourceCurveCount == fadeMotion.ParameterIds.Length)
+            {
+                return map;
+            }
+
+            var ids = fadeMotion.ParameterIds;
+            var idToCurve = new System.Collections.Generic.Dictionary<string, int>(ids.Length);
+
+            // First occurrence wins, matching the original forward scan.
+            for (var k = 0; k < ids.Length; ++k)
+            {
+                if (ids[k] != null && !idToCurve.ContainsKey(ids[k]))
+                {
+                    idToCurve.Add(ids[k], k);
+                }
+            }
+
+            map = new FadeMotionCurveMap
+            {
+                ParameterCurveIndices = new int[DestinationParameters.Length],
+                PartCurveIndices = new int[DestinationParts.Length],
+                SourceCurveCount = ids.Length
+            };
+
+            for (var j = 0; j < DestinationParameters.Length; ++j)
+            {
+                map.ParameterCurveIndices[j] = idToCurve.TryGetValue(DestinationParameters[j].Id, out var k) ? k : -1;
+            }
+
+            for (var j = 0; j < DestinationParts.Length; ++j)
+            {
+                map.PartCurveIndices[j] = idToCurve.TryGetValue(DestinationParts[j].Id, out var k) ? k : -1;
+            }
+
+            _fadeMotionCurveMaps[fadeMotion] = map;
+
+            return map;
+        }
+
         #endregion
 
         #region Function
@@ -258,20 +327,12 @@ namespace Live2D.Cubism.Framework.MotionFade
 
                 var motionWeight = fadeInWeight * fadeOutWeight * layerWeight;
 
+                var curveMap = GetFadeMotionCurveMap(fadeMotion);
+
                 // Apply to parameter values
                 for (var j = 0; j < DestinationParameters.Length; ++j)
                 {
-                    var index = -1;
-                    for (var k = 0; k < fadeMotion.ParameterIds.Length; ++k)
-                    {
-                        if (fadeMotion.ParameterIds[k] != DestinationParameters[j].Id)
-                        {
-                            continue;
-                        }
-
-                        index = k;
-                        break;
-                    }
+                    var index = curveMap.ParameterCurveIndices[j];
 
                     if (index < 0)
                     {
@@ -304,17 +365,7 @@ namespace Live2D.Cubism.Framework.MotionFade
                 // Apply to part opacities
                 for (var j = 0; j < DestinationParts.Length; ++j)
                 {
-                    var index = -1;
-                    for (var k = 0; k < fadeMotion.ParameterIds.Length; ++k)
-                    {
-                        if (fadeMotion.ParameterIds[k] != DestinationParts[j].Id)
-                        {
-                            continue;
-                        }
-
-                        index = k;
-                        break;
-                    }
+                    var index = curveMap.PartCurveIndices[j];
 
                     if (index < 0)
                     {

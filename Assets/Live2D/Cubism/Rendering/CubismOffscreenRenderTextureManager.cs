@@ -72,11 +72,6 @@ namespace Live2D.Cubism.Rendering
         private RenderTextureContainer[] _offscreenRenderTextureContainers;
 
         /// <summary>
-        /// Previous frame active render texture count.
-        /// </summary>
-        private int _previousActiveRenderTextureCount;
-
-        /// <summary>
         /// Current active render texture count.
         /// </summary>
         private int _currentActiveRenderTextureCount;
@@ -85,27 +80,6 @@ namespace Live2D.Cubism.Rendering
         /// CubismRenderTextureController already instantiated?
         /// </summary>
         private bool _isRenderTextureControllerInstantiated;
-
-        /// <summary>
-        /// <see cref="HasResetThisFrame"/>'s backing field.
-        /// </summary>
-        private bool _hasResetThisFrame;
-
-        /// <summary>
-        /// Did reset _previousActiveRenderTextureCount this frame?
-        /// </summary>
-        public bool HasResetThisFrame
-        {
-            get
-            {
-                return _hasResetThisFrame;
-            }
-
-            set
-            {
-                _hasResetThisFrame = value;
-            }
-        }
 
         /// <summary>
         /// Check if the render texture needs to be resized or recreated to match the base texture.
@@ -204,22 +178,7 @@ namespace Live2D.Cubism.Rendering
                 };
             }
 
-            _previousActiveRenderTextureCount = 0;
             _currentActiveRenderTextureCount = 0;
-            _hasResetThisFrame = false;
-        }
-
-        /// <summary>
-        /// Reset the previous active render texture count at the beginning of each frame.
-        /// This should be called once per frame before any CubismRenderController OnLateUpdate.
-        /// </summary>
-        public void ResetPreviousActiveCount()
-        {
-            if (!_hasResetThisFrame)
-            {
-                _previousActiveRenderTextureCount = 0;
-                _hasResetThisFrame = true;
-            }
         }
 
         /// <summary>
@@ -254,11 +213,6 @@ namespace Live2D.Cubism.Rendering
             }
 
             _currentActiveRenderTextureCount++;
-
-            // Update the maximum count for this frame
-            _previousActiveRenderTextureCount = _currentActiveRenderTextureCount > _previousActiveRenderTextureCount
-            ? _currentActiveRenderTextureCount
-            : _previousActiveRenderTextureCount;
 
             // Search for an unused render texture.
             for (var i = 0; i < _offscreenRenderTextureContainers?.Length; ++i)
@@ -363,53 +317,6 @@ namespace Live2D.Cubism.Rendering
         }
 
         /// <summary>
-        /// End use all render textures.
-        /// </summary>
-        public void StopUsingAllRenderTextures()
-        {
-            // If not initialized, do nothing.
-            if (_offscreenRenderTextureContainers == null)
-            {
-                return;
-            }
-
-            // Mark all render textures as not in use.
-            for (var i = 0; i < _offscreenRenderTextureContainers.Length; ++i)
-            {
-                _offscreenRenderTextureContainers[i].InUse = false;
-            }
-
-            _currentActiveRenderTextureCount = 0;
-            _hasResetThisFrame = false;
-        }
-
-        /// <summary>
-        /// Release stale render textures that are not used in the previous frame.
-        /// </summary>
-        public void ReleaseStaleRenderTextures()
-        {
-            // If not initialized, do nothing.
-            if (_offscreenRenderTextureContainers == null
-                || _offscreenRenderTextureContainers.Length <= _previousActiveRenderTextureCount
-                || HasResetThisFrame)
-            {
-                return;
-            }
-
-            var newSize = Math.Max(OffscreenRenderTextureDefaultCount, _previousActiveRenderTextureCount);
-
-            // Release unused render textures beyond the _previousActiveRenderTextureCount.
-            for (var i = newSize; i < _offscreenRenderTextureContainers.Length; i++)
-            {
-                _offscreenRenderTextureContainers[i].RenderTexture.Release();
-                _offscreenRenderTextureContainers[i].RenderTexture = null;
-            }
-
-            // Resize the array to keep only the active render textures.
-            Array.Resize(ref _offscreenRenderTextureContainers, newSize);
-        }
-
-        /// <summary>
         /// Release all offscreen render textures.
         /// </summary>
         public void Release()
@@ -432,9 +339,7 @@ namespace Live2D.Cubism.Rendering
             }
 
             _offscreenRenderTextureContainers = null;
-            _previousActiveRenderTextureCount = 0;
             _currentActiveRenderTextureCount = 0;
-            _hasResetThisFrame = false;
         }
     }
 }

@@ -316,12 +316,14 @@ namespace Live2D.Cubism.Framework.Physics
             }
 
 
-            // Initialize inputs.
+            // Initialize inputs. Cached parameter indices are invalidated so they
+            // re-resolve lazily against the current parameters array.
             OriginalInput = new CubismPhysicsInput[Input.Length];
             for (var i = 0; i < Input.Length; ++i)
             {
                 OriginalInput[i] = Input[i];
                 Input[i].InitializeGetter();
+                Input[i].SourceIndex = -1;
             }
 
             _previousRigOutput = new SubRigPhysicsOutput();
@@ -330,12 +332,13 @@ namespace Live2D.Cubism.Framework.Physics
             Array.Resize(ref _previousRigOutput.Output, Output.Length);
             Array.Resize(ref _currentRigOutput.Output, Output.Length);
 
-            // Initialize outputs.
+            // Initialize outputs. Destination indices re-resolve lazily like inputs.
             OriginalOutput = new CubismPhysicsOutput[Output.Length];
             for (var i = 0; i < Output.Length; ++i)
             {
                 OriginalOutput[i] = Output[i];
                 Output[i].InitializeGetter();
+                Output[i].DestinationIndex = -1;
             }
         }
 
@@ -405,6 +408,7 @@ namespace Live2D.Cubism.Framework.Physics
                     }
 
                     output.Destination = destination;
+                    output.DestinationIndex = -1;
                 }
 
                 var particleIndex = output.ParticleIndex;
@@ -413,8 +417,20 @@ namespace Live2D.Cubism.Framework.Physics
                 {
                     continue;
                 }
-                // Update each time as the index may fluctuate.
-                output.DestinationIndex = Array.IndexOf(Rig.Controller.Parameters, output.Destination);
+
+                // The parameters array keeps its identity for the lifetime of the
+                // controller, so the index only needs resolving when the destination
+                // was (re)bound; the previous per-frame IndexOf was an O(outputs x
+                // parameters) linear scan every evaluation.
+                if (output.DestinationIndex < 0)
+                {
+                    output.DestinationIndex = Array.IndexOf(Rig.Controller.Parameters, output.Destination);
+
+                    if (output.DestinationIndex < 0)
+                    {
+                        continue;
+                    }
+                }
 
                 var translation = Particles[particleIndex].Position -
                                         Particles[particleIndex - 1].Position;
@@ -448,8 +464,13 @@ namespace Live2D.Cubism.Framework.Physics
                 if (Input[i].Source == null)
                 {
                     Input[i].Source = Rig.Controller.Parameters.FindById(Input[i].SourceId);
+                    Input[i].SourceIndex = Array.IndexOf(Rig.Controller.Parameters, Input[i].Source);
                 }
-                var index = Array.IndexOf(Rig.Controller.Parameters, Input[i].Source);
+                else if (Input[i].SourceIndex < 0)
+                {
+                    Input[i].SourceIndex = Array.IndexOf(Rig.Controller.Parameters, Input[i].Source);
+                }
+                var index = Input[i].SourceIndex;
 
                 var parameter = Input[i].Source;
                 Input[i].GetNormalizedParameterValue(
@@ -493,6 +514,7 @@ namespace Live2D.Cubism.Framework.Physics
                     }
 
                     Output[i].Destination = destination;
+                    Output[i].DestinationIndex = -1;
                 }
 
                 var particleIndex = Output[i].ParticleIndex;
@@ -502,7 +524,16 @@ namespace Live2D.Cubism.Framework.Physics
                     continue;
                 }
 
-                var index = Array.IndexOf(Rig.Controller.Parameters, Output[i].Destination);
+                if (Output[i].DestinationIndex < 0)
+                {
+                    Output[i].DestinationIndex = Array.IndexOf(Rig.Controller.Parameters, Output[i].Destination);
+
+                    if (Output[i].DestinationIndex < 0)
+                    {
+                        continue;
+                    }
+                }
+                var index = Output[i].DestinationIndex;
 
                 var translation = Particles[particleIndex].Position -
                                         Particles[particleIndex - 1].Position;
