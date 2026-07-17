@@ -124,12 +124,14 @@ namespace Live2D.Cubism.Framework.MotionFade
 
             for (var j = 0; j < DestinationParameters.Length; ++j)
             {
-                map.ParameterCurveIndices[j] = idToCurve.TryGetValue(DestinationParameters[j].Id, out var k) ? k : -1;
+                var id = DestinationParameters[j].Id;
+                map.ParameterCurveIndices[j] = id != null && idToCurve.TryGetValue(id, out var k) ? k : -1;
             }
 
             for (var j = 0; j < DestinationParts.Length; ++j)
             {
-                map.PartCurveIndices[j] = idToCurve.TryGetValue(DestinationParts[j].Id, out var k) ? k : -1;
+                var id = DestinationParts[j].Id;
+                map.PartCurveIndices[j] = id != null && idToCurve.TryGetValue(id, out var k) ? k : -1;
             }
 
             _fadeMotionCurveMaps[fadeMotion] = map;

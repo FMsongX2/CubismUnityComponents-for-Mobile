@@ -362,6 +362,12 @@ namespace Live2D.Cubism.Framework.Physics
                     input.Source = Rig.Controller.Parameters.FindById(input.SourceId);
                     input.SourceIndex = Array.IndexOf(Rig.Controller.Parameters, input.Source);
                 }
+                else if (input.SourceIndex < 0)
+                {
+                    // Initialize() invalidates the cached index without touching the
+                    // resolved Source; re-resolve here or ParametersCache[-1] throws.
+                    input.SourceIndex = Array.IndexOf(Rig.Controller.Parameters, input.Source);
+                }
 
                 var parameter = input.Source;
                 input.GetNormalizedParameterValue(
