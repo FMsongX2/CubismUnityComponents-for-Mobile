@@ -348,24 +348,33 @@ namespace Live2D.Cubism.Rendering
         /// </summary>
         private void WriteTransform(MaterialPropertyBlock property)
         {
+            // World-composed transform: the model may live under a placement rig (parent owns
+            // position/scale), so local components are only correct while the model sits at the
+            // scene root. Same root-assumption already fixed in the batched path's RecordMainDraws —
+            // without this, edit mode (legacy path) and play mode (batched path) render at
+            // different sizes/positions.
+            var controllerTransform = RenderController.transform;
+            var worldPosition = controllerTransform.position;
+            var worldScale = controllerTransform.lossyScale;
+
             // Set offset and scale from transform.
             var offsetScale = _offsetScale;
 
-            offsetScale.Set(RenderController.transform.localPosition.x + transform.localPosition.x, RenderController.transform.localPosition.y + transform.localPosition.y,
-                RenderController.transform.localScale.x * transform.localScale.x, RenderController.transform.localScale.y * transform.localScale.y);
+            offsetScale.Set(worldPosition.x + transform.localPosition.x, worldPosition.y + transform.localPosition.y,
+                worldScale.x * transform.localScale.x, worldScale.y * transform.localScale.y);
             _offsetScale = offsetScale;
             // Write property.
             property.SetVector(CubismShaderVariables.OffsetScale, _offsetScale);
 
             // Set rotation from transform.
-            var combinedRotation = RenderController.transform.localRotation * transform.localRotation;
+            var combinedRotation = controllerTransform.rotation * transform.localRotation;
             _quaternion.Set(combinedRotation.x, combinedRotation.y, combinedRotation.z, combinedRotation.w);
 
             // Write property.
             property.SetVector(CubismShaderVariables.RotationQuaternion, _quaternion);
 
             // Set z offset from transform.
-            _zOffset = RenderController.transform.localPosition.z + transform.localPosition.z;
+            _zOffset = worldPosition.z + transform.localPosition.z;
             // Write property.
             property.SetFloat(CubismShaderVariables.ZOffset, _zOffset);
         }

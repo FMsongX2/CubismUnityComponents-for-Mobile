@@ -170,6 +170,28 @@ namespace Live2D.Cubism.Rendering
         private bool _indicesDirty;
         private bool _texturesDirty;
 
+        // Dirty vertex ranges ([min, max) vertex indices) so partial updates upload
+        // only the touched span instead of the whole stream every frame.
+        private int _positionsDirtyMin;
+        private int _positionsDirtyMax;
+        private int _stream1DirtyMin;
+        private int _stream1DirtyMax;
+
+        // Mask atlas re-render gate: the atlas persists across frames, so it only
+        // needs re-rasterizing when a mask mesh moved or its contents may have been
+        // discarded (context loss, resume). Starts dirty for the first render.
+        private bool _maskContentDirty = true;
+
+        // True once the current atlas contents were rendered and no discard-class
+        // event happened since; cleared to force a re-render regardless of motion.
+        private bool _maskAtlasContentValid;
+
+        // Per-drawable: member of at least one mask group (moving it invalidates the atlas).
+        private bool[] _isMaskGroupMember;
+
+        // Cached comparison for the defensive RebuildOrder sort (avoids a per-call closure).
+        private Comparison<int> _renderOrderComparison;
+
         /// <summary>
         /// True while the texture-array snapshot waits for async texture uploads
         /// to settle; the model batches per texture in the meantime.
@@ -205,6 +227,36 @@ namespace Live2D.Cubism.Rendering
         public bool IsValid
         {
             get { return !_isDisposed && !_isBroken && _mesh != null; }
+        }
+
+
+        private void MarkPositionsDirty(int baseVertex, int count)
+        {
+            if (!_positionsDirty)
+            {
+                _positionsDirtyMin = baseVertex;
+                _positionsDirtyMax = baseVertex + count;
+                _positionsDirty = true;
+                return;
+            }
+
+            if (baseVertex < _positionsDirtyMin) { _positionsDirtyMin = baseVertex; }
+            if (baseVertex + count > _positionsDirtyMax) { _positionsDirtyMax = baseVertex + count; }
+        }
+
+
+        private void MarkStream1Dirty(int baseVertex, int count)
+        {
+            if (!_stream1Dirty)
+            {
+                _stream1DirtyMin = baseVertex;
+                _stream1DirtyMax = baseVertex + count;
+                _stream1Dirty = true;
+                return;
+            }
+
+            if (baseVertex < _stream1DirtyMin) { _stream1DirtyMin = baseVertex; }
+            if (baseVertex + count > _stream1DirtyMax) { _stream1DirtyMax = baseVertex + count; }
         }
 
 
@@ -527,8 +579,8 @@ namespace Live2D.Cubism.Rendering
 
             _modelProperties = new MaterialPropertyBlock();
 
-            _positionsDirty = true;
-            _stream1Dirty = true;
+            MarkPositionsDirty(0, _totalVertexCount);
+            MarkStream1Dirty(0, _totalVertexCount);
             _indicesDirty = true;
         }
 
@@ -537,6 +589,9 @@ namespace Live2D.Cubism.Rendering
         {
             var groupByKey = new Dictionary<string, int>();
             var members = new List<int[]>();
+            var extents = new List<float>();
+
+            _isMaskGroupMember = new bool[_drawableCount];
 
             for (var i = 0; i < drawables.Length; i++)
             {
@@ -555,14 +610,32 @@ namespace Live2D.Cubism.Rendering
                 {
                     var masks = drawable.Masks;
                     var maskIndices = new int[masks.Length];
+
+                    // Bind-pose extent of the mask geometry; drives the tile size so
+                    // large clip regions get more atlas resolution than small ones.
+                    var min = new Vector2(float.MaxValue, float.MaxValue);
+                    var max = new Vector2(float.MinValue, float.MinValue);
+
                     for (var m = 0; m < masks.Length; m++)
                     {
                         maskIndices[m] = masks[m].UnmanagedIndex;
+                        _isMaskGroupMember[masks[m].UnmanagedIndex] = true;
+
+                        var maskPositions = masks[m].VertexPositions;
+                        for (var v = 0; maskPositions != null && v < maskPositions.Length; v++)
+                        {
+                            var position = maskPositions[v];
+                            if (position.x < min.x) { min.x = position.x; }
+                            if (position.y < min.y) { min.y = position.y; }
+                            if (position.x > max.x) { max.x = position.x; }
+                            if (position.y > max.y) { max.y = position.y; }
+                        }
                     }
 
                     group = members.Count + 1; // Slot 0 is the "not masked" sentinel.
                     groupByKey.Add(key, group);
                     members.Add(maskIndices);
+                    extents.Add(min.x <= max.x ? Mathf.Max(max.x - min.x, max.y - min.y) : 0.0f);
                 }
 
                 _maskGroup[unmanagedIndex] = (byte)group;
@@ -584,7 +657,19 @@ namespace Live2D.Cubism.Rendering
                 return;
             }
 
-            // Tile layout: 4 channels per tile, tiles arranged in a square grid.
+            if (!TryLayoutMaskTilesByExtent(extents))
+            {
+                LayoutMaskTilesUniform();
+            }
+        }
+
+
+        /// <summary>
+        /// Uniform square grid layout (legacy scheme): 4 channels per tile, all tiles
+        /// the same size. Kept as the fallback when extent-based packing bails out.
+        /// </summary>
+        private void LayoutMaskTilesUniform()
+        {
             var tileCount = (_maskGroupCount + 3) / 4;
             var tilesPerAxis = Mathf.CeilToInt(Mathf.Sqrt(tileCount));
             var tileSize = 1.0f / tilesPerAxis;
@@ -598,6 +683,136 @@ namespace Live2D.Cubism.Rendering
 
                 _maskTiles[group + 1] = new Vector4(channel, column, row, tileSize);
             }
+        }
+
+
+        /// <summary>
+        /// Extent-aware tile layout: groups are ranked by mask size, packed four per
+        /// tile, and tiles get power-of-two sizes proportional to their largest
+        /// member so big clip regions keep more atlas resolution. The tile vector
+        /// stores fractional column/row units, which the existing shader math
+        /// (<c>bound = tile.yz * tile.w</c>) already supports. Returns false when the
+        /// layout does not verifiably fit; the caller then uses the uniform grid.
+        /// </summary>
+        private bool TryLayoutMaskTilesByExtent(List<float> extents)
+        {
+            var tileCount = (_maskGroupCount + 3) / 4;
+
+            // Rank groups by extent (descending, stable on group index).
+            var ranked = new int[_maskGroupCount];
+            for (var i = 0; i < _maskGroupCount; i++) { ranked[i] = i; }
+            System.Array.Sort(ranked, (a, b) =>
+            {
+                var byExtent = extents[b].CompareTo(extents[a]);
+                return byExtent != 0 ? byExtent : a.CompareTo(b);
+            });
+
+            var maxExtent = extents[ranked[0]];
+            if (maxExtent <= 0.0f)
+            {
+                return false;
+            }
+
+            // Power-of-two tile sizes, extent-proportional, clamped to [1/4, cap].
+            // The floor matters: sharp small clip regions (hair strands, eyes) alias
+            // visibly below ~256px tiles, and 16 quarter-tiles still cover the full
+            // 64-group budget (16 x 1/16 area = 1), so no layout ever needs less.
+            const float minTileSize = 0.25f;
+            var cap = tileCount == 1 ? 1.0f : 0.5f;
+            var sizes = new float[tileCount];
+            var totalArea = 0.0f;
+
+            for (var t = 0; t < tileCount; t++)
+            {
+                var tileExtent = extents[ranked[t * 4]];
+                var size = cap;
+                while (size * 0.5f >= minTileSize && size * maxExtent > cap * tileExtent * 2.0f - 1e-6f)
+                {
+                    size *= 0.5f;
+                }
+                sizes[t] = size;
+                totalArea += size * size;
+            }
+
+            // Shrink from the smallest tiles up until everything fits the unit square.
+            var guard = 256;
+            while (totalArea > 1.0f + 1e-6f && guard-- > 0)
+            {
+                var shrunk = false;
+                for (var t = tileCount - 1; t >= 0; t--)
+                {
+                    if (sizes[t] * 0.5f >= minTileSize)
+                    {
+                        totalArea -= sizes[t] * sizes[t] * 0.75f;
+                        sizes[t] *= 0.5f;
+                        shrunk = true;
+                        break;
+                    }
+                }
+                if (!shrunk)
+                {
+                    return false;
+                }
+            }
+            if (totalArea > 1.0f + 1e-6f)
+            {
+                return false;
+            }
+
+            // Quadtree placement, largest tile first (sizes are descending already).
+            var freeNodes = new List<Vector3>(64) { new Vector3(0.0f, 0.0f, 1.0f) }; // (x, y, size)
+            var placements = new Vector2[tileCount];
+
+            for (var t = 0; t < tileCount; t++)
+            {
+                var size = sizes[t];
+
+                // Best-fit: smallest free node that still holds the tile.
+                var best = -1;
+                for (var n = 0; n < freeNodes.Count; n++)
+                {
+                    if (freeNodes[n].z >= size - 1e-6f && (best < 0 || freeNodes[n].z < freeNodes[best].z))
+                    {
+                        best = n;
+                    }
+                }
+                if (best < 0)
+                {
+                    return false;
+                }
+
+                var node = freeNodes[best];
+                freeNodes.RemoveAt(best);
+
+                // Split the node down to the requested size, keeping the quarters.
+                while (node.z > size + 1e-6f)
+                {
+                    var half = node.z * 0.5f;
+                    freeNodes.Add(new Vector3(node.x + half, node.y, half));
+                    freeNodes.Add(new Vector3(node.x, node.y + half, half));
+                    freeNodes.Add(new Vector3(node.x + half, node.y + half, half));
+                    node.z = half;
+                }
+
+                placements[t] = new Vector2(node.x, node.y);
+            }
+
+            // Emit tile vectors: fractional column/row in units of the tile size.
+            for (var r = 0; r < _maskGroupCount; r++)
+            {
+                var t = r / 4;
+                var channel = r & 3;
+                var size = sizes[t];
+                var group = ranked[r];
+
+                _maskTiles[group + 1] = new Vector4(
+                    channel,
+                    placements[t].x / size,
+                    placements[t].y / size,
+                    size);
+            }
+
+            return true;
         }
 
 
@@ -716,6 +931,10 @@ namespace Live2D.Cubism.Rendering
             {
                 _mesh.SetIndexBufferData(_indexBuffer16, 0, 0, _maskIndexCount, CubismBatchedRendering.UpdateFlags);
             }
+
+            // New sections invalidate whatever the atlas currently holds.
+            _maskContentDirty = true;
+            _maskAtlasContentValid = false;
         }
 
 
@@ -942,6 +1161,11 @@ namespace Live2D.Cubism.Rendering
             }
 
             RefreshTextureArrayContent();
+
+            // The mask atlas is persistent and only re-rendered when dirty; after a
+            // suspected context loss its contents cannot be trusted anymore.
+            _maskContentDirty = true;
+            _maskAtlasContentValid = false;
         }
 
 
@@ -1070,7 +1294,13 @@ namespace Live2D.Cubism.Rendering
                         }
                     }
 
-                    _positionsDirty = true;
+                    MarkPositionsDirty(baseVertex, count);
+
+                    // A moved mask mesh invalidates the cached atlas contents.
+                    if (_isMaskGroupMember[i])
+                    {
+                        _maskContentDirty = true;
+                    }
                 }
 
                 if (fullRefresh || drawableData.IsRenderOrderDirty)
@@ -1164,7 +1394,7 @@ namespace Live2D.Cubism.Rendering
                 }
             }
 
-            _positionsDirty = true;
+            MarkPositionsDirty(0, _totalVertexCount);
         }
 
 
@@ -1202,12 +1432,15 @@ namespace Live2D.Cubism.Rendering
                 _orderedDrawables[i] = i;
             }
 
-            var orders = _renderOrders;
-            Array.Sort(_orderedDrawables, (a, b) =>
-            {
-                var byOrder = orders[a].CompareTo(orders[b]);
-                return byOrder != 0 ? byOrder : a.CompareTo(b);
-            });
+            _renderOrderComparison ??= CompareByRenderOrder;
+            Array.Sort(_orderedDrawables, _renderOrderComparison);
+        }
+
+
+        private int CompareByRenderOrder(int a, int b)
+        {
+            var byOrder = _renderOrders[a].CompareTo(_renderOrders[b]);
+            return byOrder != 0 ? byOrder : a.CompareTo(b);
         }
 
 
@@ -1264,7 +1497,7 @@ namespace Live2D.Cubism.Rendering
                 _stream1[baseVertex + v] = row;
             }
 
-            _stream1Dirty = true;
+            MarkStream1Dirty(baseVertex, count);
         }
 
 
@@ -1333,13 +1566,27 @@ namespace Live2D.Cubism.Rendering
 
             if (_positionsDirty)
             {
-                _mesh.SetVertexBufferData(_positions, 0, 0, _totalVertexCount, 0, CubismBatchedRendering.UpdateFlags);
+                var start = Mathf.Clamp(_positionsDirtyMin, 0, _totalVertexCount);
+                var count = Mathf.Clamp(_positionsDirtyMax, start, _totalVertexCount) - start;
+
+                if (count > 0)
+                {
+                    _mesh.SetVertexBufferData(_positions, start, start, count, 0, CubismBatchedRendering.UpdateFlags);
+                }
+
                 _positionsDirty = false;
             }
 
             if (_stream1Dirty)
             {
-                _mesh.SetVertexBufferData(_stream1, 0, 0, _totalVertexCount, 1, CubismBatchedRendering.UpdateFlags);
+                var start = Mathf.Clamp(_stream1DirtyMin, 0, _totalVertexCount);
+                var count = Mathf.Clamp(_stream1DirtyMax, start, _totalVertexCount) - start;
+
+                if (count > 0)
+                {
+                    _mesh.SetVertexBufferData(_stream1, start, start, count, 1, CubismBatchedRendering.UpdateFlags);
+                }
+
                 _stream1Dirty = false;
             }
 
@@ -1498,9 +1745,34 @@ namespace Live2D.Cubism.Rendering
                 return;
             }
 
+            // A fully transparent model draws nothing; keep pending mask updates
+            // dirty so the atlas refreshes when the model reappears.
+            if (_controller.Opacity <= 0.0f)
+            {
+                return;
+            }
+
+            // The atlas is persistent, so skip the re-render when no mask mesh moved
+            // and the contents are still trustworthy. A recreated RT (graphics
+            // context loss) comes back blank and must always be re-rendered.
+            if (_maskAtlas == null || !_maskAtlas.IsCreated())
+            {
+                _maskAtlasContentValid = false;
+            }
+
+            if (!_maskContentDirty && _maskAtlasContentValid)
+            {
+                return;
+            }
+
+            _maskContentDirty = false;
+            _maskAtlasContentValid = true;
+
             UpdateMaskTransforms();
 
-            buffer.SetRenderTarget(_maskAtlas);
+            // DontCare: the previous contents are fully replaced, so tilers need not
+            // load the old atlas into tile memory.
+            buffer.SetRenderTarget(_maskAtlas, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
             buffer.ClearRenderTarget(false, true, Color.clear);
 
             for (var section = 0; section < _maskSections.Count; section++)
@@ -1580,16 +1852,29 @@ namespace Live2D.Cubism.Rendering
                 return;
             }
 
-            var controllerTransform = _controller.transform;
-            var matrix = Matrix4x4.TRS(
-                controllerTransform.localPosition,
-                controllerTransform.localRotation,
-                controllerTransform.localScale);
+            var modelOpacity = Mathf.Clamp01(_controller.Opacity);
 
-            _modelProperties.SetFloat(ModelOpacityId, Mathf.Clamp01(_controller.Opacity));
-            _modelProperties.SetVectorArray(MaskTilesArrayId, _maskTiles);
-            _modelProperties.SetVectorArray(MaskTransformsArrayId, _maskTransforms);
+            // Fully transparent output is a no-op under every supported blend mode;
+            // skip the draws (and their bandwidth) entirely.
+            if (modelOpacity <= 0.0f)
+            {
+                return;
+            }
+
+            // Object-to-world must include ancestors: the model lives under a placement rig
+            // (AvatarRig owns position/scale), so local TRS renders at origin/scale 1.
+            var matrix = _controller.transform.localToWorldMatrix;
+
+            _modelProperties.SetFloat(ModelOpacityId, modelOpacity);
             _modelProperties.SetTexture(MaskTextureId, _maskAtlas != null ? (Texture)_maskAtlas : Texture2D.whiteTexture);
+
+            // Mask parameter arrays go through command-buffer globals instead of the
+            // property block: DrawMesh snapshots the entire block per call, so 2 KB of
+            // arrays would be captured once per batch. Globals are recorded once per
+            // model here; commands execute in order, so interleaved models each see
+            // their own values.
+            buffer.SetGlobalVectorArray(MaskTilesArrayId, _maskTiles);
+            buffer.SetGlobalVectorArray(MaskTransformsArrayId, _maskTransforms);
 
             for (var batch = 0; batch < _batches.Count; batch++)
             {
@@ -1621,7 +1906,7 @@ namespace Live2D.Cubism.Rendering
         /// during the gap are lost, so everything is re-read defensively.
         /// </summary>
         /// <returns>False when the renderer no longer matches the model and must be rebuilt.</returns>
-        public bool ResumeAfterDisable()
+        public unsafe bool ResumeAfterDisable()
         {
             if (!IsValid)
             {
@@ -1639,6 +1924,7 @@ namespace Live2D.Cubism.Rendering
 
             var drawables = model.Drawables;
             var renderOrders = model.AllDrawObjectsRenderOrder;
+            var positions = (Vector3*)_positions.GetUnsafePtr();
 
             for (var i = 0; i < drawables.Length; i++)
             {
@@ -1651,16 +1937,15 @@ namespace Live2D.Cubism.Rendering
                 }
 
                 // Current pose (the core may have been updated while unsubscribed).
-                var positions = drawable.VertexPositions;
+                // Allocation-free read: this runs on every resume, and avatar
+                // power-management resumes on every screen transition — the
+                // allocating VertexPositions getter would produce hundreds of
+                // kilobytes of garbage per resume on large models.
                 var baseVertex = _vertexBase[unmanagedIndex];
-                var count = Mathf.Min(_vertexCount[unmanagedIndex], positions != null ? positions.Length : 0);
 
-                for (var v = 0; v < count; v++)
+                if (drawable.ReadVertexPositionsInto(positions + baseVertex, _vertexCount[unmanagedIndex]) < 0)
                 {
-                    var position = _positions[baseVertex + v];
-                    position.x = positions[v].x;
-                    position.y = positions[v].y;
-                    _positions[baseVertex + v] = position;
+                    return false;
                 }
 
                 _renderOrders[unmanagedIndex] = renderOrders[unmanagedIndex];
@@ -1675,11 +1960,15 @@ namespace Live2D.Cubism.Rendering
                 RefreshSortZ(_controller.DepthOffset);
             }
 
-            _positionsDirty = true;
-            _stream1Dirty = true;
+            MarkPositionsDirty(0, _totalVertexCount);
+            MarkStream1Dirty(0, _totalVertexCount);
             _indicesDirty = true;
             _lastFlushedFrame = -1;
             _lastMaskUpdateFrame = -1;
+
+            // The atlas contents may be stale or discarded after the gap.
+            _maskContentDirty = true;
+            _maskAtlasContentValid = false;
 
             // Dirty events raised while disabled (unsubscribed) are gone for good;
             // treat the first event after resume as a full refresh so visibility,

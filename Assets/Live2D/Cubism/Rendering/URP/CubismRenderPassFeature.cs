@@ -982,7 +982,12 @@ namespace Live2D.Cubism.Rendering.URP
                 // takes the batched path.
                 if (data.AllControllersBatched)
                 {
-                    _commandBuffer.SetRenderTarget(data.CommonRenderingTextureHandle, data.CameraDepthTextureHandle);
+                    // Color contents are fully cleared below — DontCare spares tilers
+                    // the load of the previous (undefined transient) contents. Camera
+                    // depth is scene state: it must load and stay stored for later passes.
+                    _commandBuffer.SetRenderTarget(
+                        data.CommonRenderingTextureHandle, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store,
+                        data.CameraDepthTextureHandle, RenderBufferLoadAction.Load, RenderBufferStoreAction.Store);
                     _commandBuffer.ClearRenderTarget(false, true, Color.clear);
 
                     var groups = data.RenderControllerGroupDaraArray;
@@ -1011,8 +1016,11 @@ namespace Live2D.Cubism.Rendering.URP
                 // Sort the renderers by their sorting order.
                 SortingRendererGroups(data);
 
-                // Set render target with both color and depth buffers for proper depth testing
-                _commandBuffer.SetRenderTarget(data.CommonRenderingTextureHandle, data.CameraDepthTextureHandle);
+                // Set render target with both color and depth buffers for proper depth testing.
+                // Color is fully cleared below, so its previous contents need not load.
+                _commandBuffer.SetRenderTarget(
+                    data.CommonRenderingTextureHandle, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store,
+                    data.CameraDepthTextureHandle, RenderBufferLoadAction.Load, RenderBufferStoreAction.Store);
                 _commandBuffer.ClearRenderTarget(false, true, Color.clear);
 
                 // Draw the objects.

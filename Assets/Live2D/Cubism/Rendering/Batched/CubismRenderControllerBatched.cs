@@ -100,16 +100,63 @@ namespace Live2D.Cubism.Rendering
 
 
         /// <summary>
+        /// True after the app was paused (backgrounded) and before the next volatile
+        /// resource refresh. A graphics context can only be lost while the app is
+        /// paused, so focus toggles without a pause (notification shade, permission
+        /// dialogs, IME) skip the refresh copy in players.
+        /// </summary>
+        private bool _pausedSinceVolatileRefresh;
+
+
+        /// <summary>
+        /// Called by Unity. Pausing is the only window in which the player's graphics
+        /// context can be lost; refresh on resume even if focus never returns
+        /// (Android multi-window resumes without focus until the user taps the app).
+        /// </summary>
+        private void OnApplicationPause(bool isPaused)
+        {
+            if (isPaused)
+            {
+                _pausedSinceVolatileRefresh = true;
+                return;
+            }
+
+            RefreshVolatileGpuResourcesAfterGap();
+        }
+
+
+        /// <summary>
         /// Called by Unity. Regaining focus can follow a graphics-context loss that
         /// discards GPU-only resources; the batched texture array has no CPU backing,
         /// so refresh it or the avatar returns as a flat gray silhouette. Scene
         /// transitions are already covered by the resume path; this handles the
-        /// background/foreground case that has no transition.
+        /// background/foreground case that has no transition. In the editor the
+        /// refresh stays unconditional: editor window occlusion events can drop
+        /// material state without any pause being reported.
         /// </summary>
         private void OnApplicationFocus(bool hasFocus)
         {
-            if (hasFocus
-                && IsBatchedRenderingActive
+            if (!hasFocus)
+            {
+                return;
+            }
+
+#if !UNITY_EDITOR
+            if (!_pausedSinceVolatileRefresh)
+            {
+                return;
+            }
+#endif
+
+            RefreshVolatileGpuResourcesAfterGap();
+        }
+
+
+        private void RefreshVolatileGpuResourcesAfterGap()
+        {
+            _pausedSinceVolatileRefresh = false;
+
+            if (IsBatchedRenderingActive
                 && BatchedRenderer != null
                 && !_isBatchedRendererSuspended)
             {
@@ -140,6 +187,24 @@ namespace Live2D.Cubism.Rendering
             {
                 if (!_isBatchedRendererSuspended)
                 {
+                    if (BatchedRenderer.IsValid)
+                    {
+                        return;
+                    }
+
+                    // The renderer was invalidated mid-run (its resources were
+                    // destroyed externally). Without this the batched path records
+                    // nothing while the legacy renderers have no meshes either, so
+                    // the model would silently vanish until the controller cycles.
+                    // Fall back to legacy and rebuild the per-drawable meshes.
+                    DisposeBatchedRenderer();
+
+                    var legacyRenderers = Renderers;
+                    for (var i = 0; i < legacyRenderers.Length; i++)
+                    {
+                        legacyRenderers[i].TryInitialize(this);
+                    }
+
                     return;
                 }
 

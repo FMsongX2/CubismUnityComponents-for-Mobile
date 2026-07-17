@@ -241,6 +241,41 @@ namespace Live2D.Cubism.Core
             }
         }
 
+
+        /// <summary>
+        /// Reads the current vertex positions straight into <paramref name="destination"/>
+        /// without the managed-array allocation of <see cref="VertexPositions"/>.
+        /// Only x/y are written; z is preserved for callers that store sort depth there.
+        /// Returns the vertex count read, or -1 when the unmanaged data does not match
+        /// the expected shape (caller should treat the model as changed).
+        /// </summary>
+        internal unsafe int ReadVertexPositionsInto(Vector3* destination, int capacity)
+        {
+            var index = UnmanagedIndex;
+            var positionViews = UnmanagedDrawables.VertexPositions;
+
+            if (positionViews == null || index < 0 || index >= positionViews.Length)
+            {
+                return -1;
+            }
+
+            var positions = positionViews[index];
+            var count = UnmanagedDrawables.VertexCounts[index];
+
+            if (count < 0 || count > capacity || !positions.IsValid || positions.Length < count * 2)
+            {
+                return -1;
+            }
+
+            for (var v = 0; v < count; ++v)
+            {
+                destination[v].x = positions[(v * 2) + 0];
+                destination[v].y = positions[(v * 2) + 1];
+            }
+
+            return count;
+        }
+
         /// <summary>
         /// Copy of vertex texture coordinates.
         /// </summary>
