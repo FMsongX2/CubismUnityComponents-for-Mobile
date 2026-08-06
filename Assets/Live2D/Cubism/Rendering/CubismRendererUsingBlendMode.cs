@@ -422,13 +422,16 @@ namespace Live2D.Cubism.Rendering
 
             for (var i = 1; i < _masks.Length; ++i)
             {
-                // Skip if the mask is null.
-                if (!_masks[i])
+                // Skip if the mask is null. The mesh is null too while the model
+                // renders batched, so guard it the same way the seed values above do.
+                var maskMesh = _masks[i] ? _masks[i].Mesh : null;
+
+                if (maskMesh == null)
                 {
                     continue;
                 }
 
-                var boundsI = _masks[i].Mesh.bounds;
+                var boundsI = maskMesh.bounds;
 
 
                 if (boundsI.min.x < min.x)

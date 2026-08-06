@@ -86,6 +86,12 @@ namespace Live2D.Cubism.Rendering
             if (BatchedRenderer != null)
             {
                 _isBatchedRendererSuspended = true;
+
+                // Nothing consumes core events while suspended, so let the core mirror
+                // vertices into the managed arrays again. Batching may not be the path
+                // taken when this controller comes back, and the legacy renderers would
+                // otherwise draw the geometry frozen at suspend time.
+                BatchedRenderer.ReleaseManagedVertexCopySuppression();
             }
         }
 

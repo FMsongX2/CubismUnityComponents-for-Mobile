@@ -107,6 +107,18 @@ namespace Live2D.Cubism.Rendering
         private CubismRenderController _controller;
         private CubismRenderer[] _renderersByDrawable;
 
+        // Vertices are pulled straight from the drawables, so the managed copy the core
+        // makes into CubismDynamicDrawableData is suppressed while this renderer owns
+        // the model. The array reference is kept so the suppression can be lifted on
+        // teardown without waiting for another core event.
+        private CubismDrawable[] _drawablesByIndex;
+        private CubismDynamicDrawableData[] _suppressedDynamicData;
+
+        // Sort depth lives in the position stream's z and is only rewritten when the
+        // render order or the depth configuration changes.
+        private float _appliedDepthOffset;
+        private bool _appliedSortZ;
+
         private int _drawableCount;
         private int _totalVertexCount;
         private int _totalIndexCount;
@@ -433,11 +445,14 @@ namespace Live2D.Cubism.Rendering
             var initialPositions = new Vector3[_drawableCount][];
             var renderOrders = model.AllDrawObjectsRenderOrder;
 
+            _drawablesByIndex = new CubismDrawable[_drawableCount];
+
             for (var i = 0; i < _drawableCount; i++)
             {
                 var drawable = drawables[i];
                 var unmanagedIndex = drawable.UnmanagedIndex;
 
+                _drawablesByIndex[unmanagedIndex] = drawable;
                 vertexUvs[unmanagedIndex] = drawable.VertexUvs;
                 localIndices[unmanagedIndex] = drawable.Indices;
                 initialPositions[unmanagedIndex] = drawable.VertexPositions;
@@ -1257,6 +1272,11 @@ namespace Live2D.Cubism.Rendering
             var fullRefresh = !_receivedFirstData;
             _receivedFirstData = true;
 
+            // From here on the vertices come from the drawables, so the core can stop
+            // filling the managed mirror. Re-asserted every event: the array identity
+            // changes when the model is rebuilt.
+            SuppressManagedVertexCopy(data);
+
             var orderDirty = false;
             var visibilityDirty = false;
             var applySortZ = _controller.SortingMode == CubismSortingMode.BackToFrontZ;
@@ -1271,35 +1291,43 @@ namespace Live2D.Cubism.Rendering
                 // Positions must only be pulled when flagged dirty: the core skips
                 // copying vertex data of non-dirty drawables into the dynamic buffers,
                 // so those arrays stay zero. Initial values come from Build().
+                // The read goes straight from the drawable into the vertex stream,
+                // skipping the managed mirror and preserving the sort depth already in
+                // z, and it reports whether anything actually moved. The core raises
+                // the flag whenever it re-evaluated a drawable, which is not the same
+                // as the drawable having changed shape.
                 if (drawableData.AreVertexPositionsDirty)
                 {
-                    var source = drawableData.VertexPositions;
+                    var drawable = _drawablesByIndex[i];
                     var baseVertex = _vertexBase[i];
                     var count = _vertexCount[i];
+                    var changed = false;
 
-                    if (source != null && source.Length >= count)
+                    if (drawable != null && count > 0)
                     {
-                        fixed (Vector3* sourcePointer = source)
-                        {
-                            UnsafeUtility.MemCpy(positions + baseVertex, sourcePointer, (long)count * sizeof(Vector3));
-                        }
+                        var read = drawable.ReadVertexPositionsInto(positions + baseVertex, count, out changed);
 
-                        if (applySortZ)
+                        // A shape mismatch means the model changed underneath us. Going
+                        // quiet here would leave the mesh frozen at the last good pose,
+                        // so invalidate instead and let the controller fall back and
+                        // rebuild the way it does for any other mid-flight invalidation.
+                        if (read != count)
                         {
-                            var z = _renderOrders[i] * -depthOffset;
-                            for (var v = 0; v < count; v++)
-                            {
-                                positions[baseVertex + v].z = z;
-                            }
+                            _isBroken = true;
+
+                            return;
                         }
                     }
 
-                    MarkPositionsDirty(baseVertex, count);
-
-                    // A moved mask mesh invalidates the cached atlas contents.
-                    if (_isMaskGroupMember[i])
+                    if (changed || fullRefresh)
                     {
-                        _maskContentDirty = true;
+                        MarkPositionsDirty(baseVertex, count);
+
+                        // A moved mask mesh invalidates the cached atlas contents.
+                        if (_isMaskGroupMember[i])
+                        {
+                            _maskContentDirty = true;
+                        }
                     }
                 }
 
@@ -1370,10 +1398,65 @@ namespace Live2D.Cubism.Rendering
                 _indicesDirty = true;
             }
 
-            if (orderDirty && applySortZ)
+            // Sort depth is no longer rewritten per dirty drawable every frame: the
+            // per-drawable read preserves z. Refresh it when the render order changes,
+            // when the depth configuration changes, or when leaving z sorting (which
+            // has to flatten the stream back to zero).
+            var sortZConfigurationChanged = applySortZ != _appliedSortZ
+                || (applySortZ && !Mathf.Approximately(depthOffset, _appliedDepthOffset));
+
+            if (sortZConfigurationChanged || (orderDirty && applySortZ) || fullRefresh)
             {
-                // Depth offsets follow render order; refresh z on next position pass.
-                RefreshSortZ(depthOffset);
+                RefreshSortZ(applySortZ ? depthOffset : 0.0f);
+
+                _appliedSortZ = applySortZ;
+                _appliedDepthOffset = depthOffset;
+            }
+        }
+
+
+        /// <summary>
+        /// Tells the core to stop mirroring vertex positions into managed arrays for
+        /// this model, and remembers the array so the suppression can be lifted when
+        /// this renderer stops owning the model.
+        /// </summary>
+        private void SuppressManagedVertexCopy(CubismDynamicDrawableData[] data)
+        {
+            if (ReferenceEquals(_suppressedDynamicData, data))
+            {
+                return;
+            }
+
+            ReleaseManagedVertexCopySuppression();
+
+            for (var i = 0; i < data.Length; i++)
+            {
+                data[i].SuppressManagedVertexCopy = true;
+            }
+
+            _suppressedDynamicData = data;
+        }
+
+
+        /// <summary>
+        /// Restores the core's managed vertex mirror. Must run whenever the legacy
+        /// per-drawable renderers may draw again, otherwise they would keep rendering
+        /// whatever geometry was last written before the suppression started.
+        /// </summary>
+        internal void ReleaseManagedVertexCopySuppression()
+        {
+            var data = _suppressedDynamicData;
+
+            if (data == null)
+            {
+                return;
+            }
+
+            _suppressedDynamicData = null;
+
+            for (var i = 0; i < data.Length; i++)
+            {
+                data[i].SuppressManagedVertexCopy = false;
             }
         }
 
@@ -1991,6 +2074,11 @@ namespace Live2D.Cubism.Rendering
         /// </summary>
         public void RestoreLegacyRendererState()
         {
+            // The legacy renderers read the core's managed vertex mirror, so it has to
+            // be filled again before they draw. Do this even when the state push below
+            // bails out: leaving the mirror suppressed would freeze their geometry.
+            ReleaseManagedVertexCopySuppression();
+
             if (_isBroken || _renderersByDrawable == null)
             {
                 return;
@@ -2034,6 +2122,8 @@ namespace Live2D.Cubism.Rendering
 
         private void DisposeResources()
         {
+            ReleaseManagedVertexCopySuppression();
+
             if (_positions.IsCreated) { _positions.Dispose(); }
             if (_stream1.IsCreated) { _stream1.Dispose(); }
             if (_uvs.IsCreated) { _uvs.Dispose(); }

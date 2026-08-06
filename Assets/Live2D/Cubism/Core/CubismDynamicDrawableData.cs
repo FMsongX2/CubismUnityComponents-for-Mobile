@@ -75,6 +75,16 @@ namespace Live2D.Cubism.Core
         public Vector3[] VertexPositions { get; internal set; }
 
         /// <summary>
+        /// When set, <see cref="ArrayExtensionMethods.ReadFrom(CubismDynamicDrawableData[], Unmanaged.CubismUnmanagedModel)"/>
+        /// leaves <see cref="VertexPositions"/> untouched and only maintains the dirty
+        /// flags. A consumer that reads vertices straight from the drawable (the batched
+        /// renderer) sets this so the per-vertex managed copy is not paid twice.
+        /// A field rather than a property because the core update may run on a worker
+        /// thread while the owner writes it from the main thread.
+        /// </summary>
+        internal volatile bool SuppressManagedVertexCopy;
+
+        /// <summary>
         /// Current multiply color.
         /// </summary>
         public Color MultiplyColor{ get; internal set; }

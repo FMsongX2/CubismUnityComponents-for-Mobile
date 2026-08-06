@@ -37,6 +37,19 @@ namespace Live2D.Cubism.Framework.Raycasting
         /// </summary>
         private CubismRaycastablePrecision[] RaycastablePrecisions { get; set; }
 
+        /// <summary>
+        /// Triangle indices per raycastable. Indices never change for a given model,
+        /// so they are pulled once instead of reallocating on every raycast.
+        /// </summary>
+        private int[][] RaycastableIndices { get; set; }
+
+        /// <summary>
+        /// Reusable vertex buffers sized to the largest raycastable. Raycasting runs
+        /// per frame in hit-testing games, so neither buffer may allocate per call.
+        /// </summary>
+        private Vector3[] _localVertexScratch;
+        private Vector3[] _worldVertexScratch;
+
 
         /// <summary>
         /// Refreshes the controller. Call this method after adding and/or removing <see cref="CubismRaycastable"/>.
@@ -75,6 +88,27 @@ namespace Live2D.Cubism.Framework.Raycasting
             Raycastables = raycastables.ToArray();
             RaycastableDrawables = raycastableDrawables.ToArray();
             RaycastablePrecisions = raycastablePrecisions.ToArray();
+
+
+            // Cache the static triangle indices and size the scratch buffers once.
+            RaycastableIndices = new int[RaycastableDrawables.Length][];
+
+            var maximumVertexCount = 0;
+
+            for (var i = 0; i < RaycastableDrawables.Length; i++)
+            {
+                RaycastableIndices[i] = RaycastableDrawables[i].Indices;
+
+                var vertexCount = RaycastableDrawables[i].VertexPositions.Length;
+
+                if (vertexCount > maximumVertexCount)
+                {
+                    maximumVertexCount = vertexCount;
+                }
+            }
+
+            _localVertexScratch = new Vector3[maximumVertexCount];
+            _worldVertexScratch = new Vector3[maximumVertexCount];
         }
 
         #region Unity Event Handling
@@ -133,7 +167,7 @@ namespace Live2D.Cubism.Framework.Raycasting
                     continue;
                 }
 
-                if (RaycastDrawable(origin, ray.direction.normalized, maximumDistance, precision, RaycastableDrawables[i], out var hitPosition, out var hitNormal, out var hitTime))
+                if (RaycastDrawable(origin, ray.direction.normalized, maximumDistance, precision, RaycastableDrawables[i], RaycastableIndices[i], out var hitPosition, out var hitNormal, out var hitTime))
                 {
                     CubismRaycastHit raycastHit;
 
@@ -165,17 +199,21 @@ namespace Live2D.Cubism.Framework.Raycasting
         /// <param name="length">The max length of the ray from the origin.</param>
         /// <param name="precision">The precision of the raycast.</param>
         /// <param name="drawable">The drawable to perform the raycast against.</param>
+        /// <param name="indices">Cached triangle indices of <paramref name="drawable"/>.</param>
         /// <param name="hitPosition">The hit position of the ray.</param>
         /// <param name="hitNormal">The hit normal of the ray.</param>
         /// <param name="hitTime">The [0, 1] parameter of the ray where the hit point is between `Origin` and `Origin + Direction`.</param>
         /// <returns>Did the Intersection Occur.</returns>
-        private bool RaycastDrawable(Vector3 origin, Vector3 normalizedDirection, float length, CubismRaycastablePrecision precision, CubismDrawable drawable, out Vector3 hitPosition, out Vector3 hitNormal, out float hitTime)
+        private bool RaycastDrawable(Vector3 origin, Vector3 normalizedDirection, float length, CubismRaycastablePrecision precision, CubismDrawable drawable, int[] indices, out Vector3 hitPosition, out Vector3 hitNormal, out float hitTime)
         {
             // Geometry comes from the core-backed drawable data, which is valid for
-            // both the legacy per-drawable meshes and the batched fast path.
-            var vertices = drawable.VertexPositions;
+            // both the legacy per-drawable meshes and the batched fast path. The read
+            // goes into a reusable buffer: the allocating VertexPositions getter would
+            // produce garbage on every raycast against every raycastable.
+            var vertices = _localVertexScratch;
+            var vertexCount = drawable.ReadVertexPositionsInto(vertices);
 
-            if (vertices == null || vertices.Length < 1)
+            if (vertexCount < 1)
             {
                 hitPosition = Vector3.zero;
                 hitNormal = Vector3.zero;
@@ -187,7 +225,7 @@ namespace Live2D.Cubism.Framework.Raycasting
             var min = vertices[0];
             var max = vertices[0];
 
-            for (var i = 1; i < vertices.Length; i++)
+            for (var i = 1; i < vertexCount; i++)
             {
                 min = Vector3.Min(min, vertices[i]);
                 max = Vector3.Max(max, vertices[i]);
@@ -214,12 +252,14 @@ namespace Live2D.Cubism.Framework.Raycasting
                     }
                 case CubismRaycastablePrecision.Triangles:
                     {
-                        var indices = drawable.Indices;
-                        var positions = new Vector3[vertices.Length];
+                        // Indices only reference vertices below vertexCount, so the
+                        // scratch buffer may be larger than this drawable needs.
+                        var positions = _worldVertexScratch;
+                        var drawableTransform = drawable.transform;
 
-                        for (var i = 0; i < vertices.Length; i++)
+                        for (var i = 0; i < vertexCount; i++)
                         {
-                            positions[i] = drawable.transform.TransformPoint(vertices[i]);
+                            positions[i] = drawableTransform.TransformPoint(vertices[i]);
                         }
 
                         if (!RayIntersectMesh(origin, normalizedDirection, length, positions, indices, out hitPosition, out hitTime))

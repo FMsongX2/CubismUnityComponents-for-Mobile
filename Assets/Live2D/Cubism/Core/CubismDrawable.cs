@@ -251,6 +251,21 @@ namespace Live2D.Cubism.Core
         /// </summary>
         internal unsafe int ReadVertexPositionsInto(Vector3* destination, int capacity)
         {
+            return ReadVertexPositionsInto(destination, capacity, out _);
+        }
+
+
+        /// <summary>
+        /// <see cref="ReadVertexPositionsInto(Vector3*,int)"/> that also reports whether
+        /// any value actually differs from what <paramref name="destination"/> held.
+        /// The core raises its dirty flag whenever it re-evaluated a drawable, which is
+        /// not the same as the drawable having moved; comparing during the copy costs
+        /// nothing extra and lets callers skip uploads and mask re-renders.
+        /// </summary>
+        internal unsafe int ReadVertexPositionsInto(Vector3* destination, int capacity, out bool changed)
+        {
+            changed = false;
+
             var index = UnmanagedIndex;
             var positionViews = UnmanagedDrawables.VertexPositions;
 
@@ -276,11 +291,37 @@ namespace Live2D.Cubism.Core
 
             for (var v = 0; v < count; ++v)
             {
-                destination[v].x = positions[(v * 2) + 0];
-                destination[v].y = positions[(v * 2) + 1];
+                var x = positions[(v * 2) + 0];
+                var y = positions[(v * 2) + 1];
+
+                if (destination[v].x != x || destination[v].y != y)
+                {
+                    changed = true;
+                }
+
+                destination[v].x = x;
+                destination[v].y = y;
             }
 
             return count;
+        }
+
+
+        /// <summary>
+        /// Managed-array overload of <see cref="ReadVertexPositionsInto(Vector3*,int)"/>
+        /// for callers that keep a reusable scratch buffer instead of native memory.
+        /// </summary>
+        internal unsafe int ReadVertexPositionsInto(Vector3[] destination)
+        {
+            if (destination == null || destination.Length < 1)
+            {
+                return -1;
+            }
+
+            fixed (Vector3* pinned = destination)
+            {
+                return ReadVertexPositionsInto(pinned, destination.Length);
+            }
         }
 
         /// <summary>

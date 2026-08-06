@@ -245,23 +245,26 @@ namespace Live2D.Cubism.Core
                 data.RenderOrder = renderOrders[i];
 
 
-                // Read vertex positions only if necessary.
-                if (!data.AreVertexPositionsDirty)
+                // Read vertex positions only if necessary. The dirty flag is left alone
+                // when the copy is suppressed: the owner still needs it to know it must
+                // pull the vertices from the drawable itself.
+                if (data.AreVertexPositionsDirty && !data.SuppressManagedVertexCopy)
                 {
-                    continue;
-                }
-
-
-                // Copy vertex positions.
-                fixed (Vector3* dataVertexPositions = data.VertexPositions)
-                {
-                    for (var v = 0; v < data.VertexPositions.Length; ++v)
+                    // Copy vertex positions.
+                    fixed (Vector3* dataVertexPositions = data.VertexPositions)
                     {
-                        dataVertexPositions[v].x = vertexPositions[i][(v * 2) + 0];
-                        dataVertexPositions[v].y = vertexPositions[i][(v * 2) + 1];
+                        for (var v = 0; v < data.VertexPositions.Length; ++v)
+                        {
+                            dataVertexPositions[v].x = vertexPositions[i][(v * 2) + 0];
+                            dataVertexPositions[v].y = vertexPositions[i][(v * 2) + 1];
+                        }
                     }
                 }
 
+
+                // The core raises the blend color flag independently of the vertex
+                // position flag. Reading colors under the vertex early-out drops
+                // color-only updates for drawables that did not deform this frame.
                 if (!data.IsBlendColorDirty)
                 {
                     continue;

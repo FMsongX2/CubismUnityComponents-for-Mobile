@@ -343,7 +343,9 @@ namespace Live2D.Cubism.Framework.Motion
             var previousSpeed = playingMotionData.Speed;
             playingMotionData.Speed = speed;
 
-            if (playingMotionData.EndTime >= 0.0f && previousSpeed > 0.0f)
+            // Speed 0 pauses playback. Rescaling the remaining time or the clip
+            // duration by it yields infinity, so leave both at their current values.
+            if (speed > 0.0f && playingMotionData.EndTime >= 0.0f && previousSpeed > 0.0f)
             {
                 playingMotionData.EndTime = Time.time + (playingMotionData.EndTime - Time.time) * previousSpeed / speed;
             }
@@ -351,7 +353,11 @@ namespace Live2D.Cubism.Framework.Motion
             _playingMotions[index] = playingMotionData;
 
             _motionState.ClipMixer.SetSpeed(speed);
-            _motionState.ClipPlayable.SetDuration(_motionState.Clip.length / speed - 0.0001f);
+
+            if (speed > 0.0f)
+            {
+                _motionState.ClipPlayable.SetDuration(_motionState.Clip.length / speed - 0.0001f);
+            }
         }
 
         /// <summary>
