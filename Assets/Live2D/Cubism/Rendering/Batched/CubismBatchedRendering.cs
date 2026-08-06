@@ -46,6 +46,15 @@ namespace Live2D.Cubism.Rendering
         public static bool AutoDrawToCameraTargetDirectly = true;
 
         /// <summary>
+        /// When true, a model whose world extent misses the camera frustum records
+        /// neither its mask atlas pass nor its batches. The extent is unioned from the
+        /// drawables' current vertices, not from the canvas rectangle, so deformed parts
+        /// reaching past the canvas cannot pop off at the screen edge. Set false to
+        /// submit every batched model regardless of where it sits.
+        /// </summary>
+        public static bool CullOffscreenModels = true;
+
+        /// <summary>
         /// When true, models whose textures share size/format/mips get a runtime
         /// <see cref="Texture2DArray"/> so texture switches stop splitting batches.
         /// The array duplicates the source textures in memory, so it is skipped on

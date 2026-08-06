@@ -251,20 +251,26 @@ namespace Live2D.Cubism.Core
         /// </summary>
         internal unsafe int ReadVertexPositionsInto(Vector3* destination, int capacity)
         {
-            return ReadVertexPositionsInto(destination, capacity, out _);
+            return ReadVertexPositionsInto(destination, capacity, out _, out _, out _);
         }
 
 
         /// <summary>
         /// <see cref="ReadVertexPositionsInto(Vector3*,int)"/> that also reports whether
-        /// any value actually differs from what <paramref name="destination"/> held.
+        /// any value actually differs from what <paramref name="destination"/> held, and
+        /// the axis-aligned extent of what was read.
         /// The core raises its dirty flag whenever it re-evaluated a drawable, which is
         /// not the same as the drawable having moved; comparing during the copy costs
-        /// nothing extra and lets callers skip uploads and mask re-renders.
+        /// nothing extra and lets callers skip uploads and mask re-renders. The extent
+        /// rides along for the same reason: the vertices are already in registers.
+        /// <paramref name="minimum"/> and <paramref name="maximum"/> are only meaningful
+        /// when the return value is positive.
         /// </summary>
-        internal unsafe int ReadVertexPositionsInto(Vector3* destination, int capacity, out bool changed)
+        internal unsafe int ReadVertexPositionsInto(Vector3* destination, int capacity, out bool changed, out Vector2 minimum, out Vector2 maximum)
         {
             changed = false;
+            minimum = Vector2.zero;
+            maximum = Vector2.zero;
 
             var index = UnmanagedIndex;
             var positionViews = UnmanagedDrawables.VertexPositions;
@@ -289,6 +295,11 @@ namespace Live2D.Cubism.Core
                 return -1;
             }
 
+            var minimumX = float.MaxValue;
+            var minimumY = float.MaxValue;
+            var maximumX = float.MinValue;
+            var maximumY = float.MinValue;
+
             for (var v = 0; v < count; ++v)
             {
                 var x = positions[(v * 2) + 0];
@@ -301,7 +312,15 @@ namespace Live2D.Cubism.Core
 
                 destination[v].x = x;
                 destination[v].y = y;
+
+                if (x < minimumX) { minimumX = x; }
+                if (x > maximumX) { maximumX = x; }
+                if (y < minimumY) { minimumY = y; }
+                if (y > maximumY) { maximumY = y; }
             }
+
+            minimum = new Vector2(minimumX, minimumY);
+            maximum = new Vector2(maximumX, maximumY);
 
             return count;
         }
@@ -320,7 +339,7 @@ namespace Live2D.Cubism.Core
 
             fixed (Vector3* pinned = destination)
             {
-                return ReadVertexPositionsInto(pinned, destination.Length);
+                return ReadVertexPositionsInto(pinned, destination.Length, out _, out _, out _);
             }
         }
 

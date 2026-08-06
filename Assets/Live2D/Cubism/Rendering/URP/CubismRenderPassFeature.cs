@@ -596,6 +596,11 @@ namespace Live2D.Cubism.Rendering.URP
             private static readonly Comparison<CubismRenderController> _batchedControllerComparison = CompareBatchedControllers;
 
             /// <summary>
+            /// Reusable frustum plane buffer for the offscreen-model test.
+            /// </summary>
+            private static readonly Plane[] _batchedFrustumPlanes = new Plane[6];
+
+            /// <summary>
             /// True when every registered render controller renders through the batched fast path.
             /// </summary>
             internal static bool AreAllControllersBatched(CubismRenderController[] renderControllers)
@@ -684,6 +689,13 @@ namespace Live2D.Cubism.Rendering.URP
             {
                 _batchedControllers.Clear();
 
+                var cullOffscreen = CubismBatchedRendering.CullOffscreenModels;
+
+                if (cullOffscreen)
+                {
+                    GeometryUtility.CalculateFrustumPlanes(data.CameraData.camera, _batchedFrustumPlanes);
+                }
+
                 for (var i = 0; i < controllers.Length; i++)
                 {
                     var controller = controllers[i];
@@ -692,6 +704,13 @@ namespace Live2D.Cubism.Rendering.URP
                         || !controller.enabled
                         || !controller.gameObject.activeInHierarchy
                         || controller.BatchedRenderer == null)
+                    {
+                        continue;
+                    }
+
+                    // Skipping the whole controller also skips its mesh upload; the
+                    // dirty ranges keep merging and land in one flush when it returns.
+                    if (cullOffscreen && controller.BatchedRenderer.IsCulledBy(_batchedFrustumPlanes))
                     {
                         continue;
                     }

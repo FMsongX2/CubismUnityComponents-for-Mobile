@@ -125,6 +125,15 @@ namespace Live2D.Cubism.Rendering
         // same either way.
         private bool _hasDestinationDependentBlend;
 
+        // Per-drawable extents, refreshed by the same loop that reads the vertices, and
+        // the model extent unioned from them. The mesh bounds cannot serve here: they
+        // are the canvas rectangle, which deformed parts routinely exceed, so culling
+        // against them would pop parts off at the screen edge.
+        private Vector2[] _drawableMinimum;
+        private Vector2[] _drawableMaximum;
+        private Bounds _localModelBounds;
+        private bool _localModelBoundsDirty = true;
+
         private int _drawableCount;
         private int _totalVertexCount;
         private int _totalIndexCount;
@@ -257,6 +266,118 @@ namespace Live2D.Cubism.Rendering
         internal bool RequiresBufferedComposition
         {
             get { return _hasDestinationDependentBlend; }
+        }
+
+
+        /// <summary>
+        /// Records a drawable's bind-pose extent so the model extent is complete before
+        /// the first core event arrives.
+        /// </summary>
+        private void SeedDrawableExtent(int drawableIndex, Vector3[] positions)
+        {
+            if (positions == null || positions.Length < 1)
+            {
+                _drawableMinimum[drawableIndex] = Vector2.zero;
+                _drawableMaximum[drawableIndex] = Vector2.zero;
+
+                return;
+            }
+
+            var minimum = new Vector2(float.MaxValue, float.MaxValue);
+            var maximum = new Vector2(float.MinValue, float.MinValue);
+
+            for (var v = 0; v < positions.Length; v++)
+            {
+                minimum = Vector2.Min(minimum, positions[v]);
+                maximum = Vector2.Max(maximum, positions[v]);
+            }
+
+            _drawableMinimum[drawableIndex] = minimum;
+            _drawableMaximum[drawableIndex] = maximum;
+            _localModelBoundsDirty = true;
+        }
+
+
+        /// <summary>
+        /// Unions the per-drawable extents into the model extent, padded along z by the
+        /// sort-depth range the position stream carries.
+        /// </summary>
+        private void RefreshLocalModelBounds()
+        {
+            _localModelBoundsDirty = false;
+
+            var minimum = new Vector2(float.MaxValue, float.MaxValue);
+            var maximum = new Vector2(float.MinValue, float.MinValue);
+            var any = false;
+
+            for (var i = 0; i < _drawableCount; i++)
+            {
+                if (_vertexCount[i] < 1)
+                {
+                    continue;
+                }
+
+                minimum = Vector2.Min(minimum, _drawableMinimum[i]);
+                maximum = Vector2.Max(maximum, _drawableMaximum[i]);
+                any = true;
+            }
+
+            if (!any)
+            {
+                _localModelBounds = new Bounds();
+
+                return;
+            }
+
+            var depthSpan = _appliedSortZ
+                ? Mathf.Abs(_appliedDepthOffset) * _drawableCount
+                : 0.0f;
+
+            var bounds = new Bounds();
+            bounds.SetMinMax(
+                new Vector3(minimum.x, minimum.y, -depthSpan),
+                new Vector3(maximum.x, maximum.y, depthSpan));
+
+            _localModelBounds = bounds;
+        }
+
+
+        /// <summary>
+        /// True when the model's world extent misses every plane of the frustum.
+        /// <see cref="CommandBuffer.DrawMesh"/> does not cull, so an offscreen model
+        /// would otherwise still pay for its mask atlas pass and all of its batches.
+        /// </summary>
+        internal bool IsCulledBy(Plane[] frustumPlanes)
+        {
+            if (frustumPlanes == null || _controller == null || _totalVertexCount < 1)
+            {
+                return false;
+            }
+
+            if (_localModelBoundsDirty)
+            {
+                RefreshLocalModelBounds();
+            }
+
+            if (_localModelBounds.size == Vector3.zero)
+            {
+                return false;
+            }
+
+            var matrix = _controller.transform.localToWorldMatrix;
+            var center = matrix.MultiplyPoint3x4(_localModelBounds.center);
+            var extents = _localModelBounds.extents;
+
+            var axisX = matrix.MultiplyVector(new Vector3(extents.x, 0.0f, 0.0f));
+            var axisY = matrix.MultiplyVector(new Vector3(0.0f, extents.y, 0.0f));
+            var axisZ = matrix.MultiplyVector(new Vector3(0.0f, 0.0f, extents.z));
+
+            var worldExtents = new Vector3(
+                Mathf.Abs(axisX.x) + Mathf.Abs(axisY.x) + Mathf.Abs(axisZ.x),
+                Mathf.Abs(axisX.y) + Mathf.Abs(axisY.y) + Mathf.Abs(axisZ.y),
+                Mathf.Abs(axisX.z) + Mathf.Abs(axisY.z) + Mathf.Abs(axisZ.z));
+
+            return !GeometryUtility.TestPlanesAABB(frustumPlanes, new Bounds(center, worldExtents * 2.0f));
         }
 
 
@@ -464,6 +585,8 @@ namespace Live2D.Cubism.Rendering
             var renderOrders = model.AllDrawObjectsRenderOrder;
 
             _drawablesByIndex = new CubismDrawable[_drawableCount];
+            _drawableMinimum = new Vector2[_drawableCount];
+            _drawableMaximum = new Vector2[_drawableCount];
 
             for (var i = 0; i < _drawableCount; i++)
             {
@@ -474,6 +597,8 @@ namespace Live2D.Cubism.Rendering
                 vertexUvs[unmanagedIndex] = drawable.VertexUvs;
                 localIndices[unmanagedIndex] = drawable.Indices;
                 initialPositions[unmanagedIndex] = drawable.VertexPositions;
+
+                SeedDrawableExtent(unmanagedIndex, initialPositions[unmanagedIndex]);
 
                 _vertexBase[unmanagedIndex] = 0; // Filled below in index order.
                 _vertexCount[unmanagedIndex] = vertexUvs[unmanagedIndex].Length;
@@ -1329,7 +1454,7 @@ namespace Live2D.Cubism.Rendering
 
                     if (drawable != null && count > 0)
                     {
-                        var read = drawable.ReadVertexPositionsInto(positions + baseVertex, count, out changed);
+                        var read = drawable.ReadVertexPositionsInto(positions + baseVertex, count, out changed, out var extentMinimum, out var extentMaximum);
 
                         // A shape mismatch means the model changed underneath us. Going
                         // quiet here would leave the mesh frozen at the last good pose,
@@ -1340,6 +1465,13 @@ namespace Live2D.Cubism.Rendering
                             _isBroken = true;
 
                             return;
+                        }
+
+                        if (changed)
+                        {
+                            _drawableMinimum[i] = extentMinimum;
+                            _drawableMaximum[i] = extentMaximum;
+                            _localModelBoundsDirty = true;
                         }
                     }
 
@@ -1435,6 +1567,9 @@ namespace Live2D.Cubism.Rendering
 
                 _appliedSortZ = applySortZ;
                 _appliedDepthOffset = depthOffset;
+
+                // The model extent pads z by the sort-depth range.
+                _localModelBoundsDirty = true;
             }
         }
 
