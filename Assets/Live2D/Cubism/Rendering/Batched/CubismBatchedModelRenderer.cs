@@ -119,6 +119,12 @@ namespace Live2D.Cubism.Rendering
         private float _appliedDepthOffset;
         private bool _appliedSortZ;
 
+        // True when any drawable blends against the destination (Add, Multiply).
+        // Such a model must composite through the offscreen buffer to keep the legacy
+        // semantics; a model that only blends "over" is associative and composites the
+        // same either way.
+        private bool _hasDestinationDependentBlend;
+
         private int _drawableCount;
         private int _totalVertexCount;
         private int _totalIndexCount;
@@ -239,6 +245,18 @@ namespace Live2D.Cubism.Rendering
         public bool IsValid
         {
             get { return !_isDisposed && !_isBroken && _mesh != null; }
+        }
+
+
+        /// <summary>
+        /// True when this model has to composite through the offscreen buffer to keep
+        /// the legacy blend semantics. Only Add and Multiply read the destination;
+        /// "over" is associative, so a model without them composites identically
+        /// whether it lands in the buffer first or straight in the camera target.
+        /// </summary>
+        internal bool RequiresBufferedComposition
+        {
+            get { return _hasDestinationDependentBlend; }
         }
 
 
@@ -461,6 +479,12 @@ namespace Live2D.Cubism.Rendering
                 _vertexCount[unmanagedIndex] = vertexUvs[unmanagedIndex].Length;
                 _indexCount[unmanagedIndex] = localIndices[unmanagedIndex].Length;
                 _colorBlend[unmanagedIndex] = drawable.ColorBlend;
+
+                if (drawable.ColorBlend != BlendTypes.ColorBlend.Normal)
+                {
+                    _hasDestinationDependentBlend = true;
+                }
+
                 _isDoubleSided[unmanagedIndex] = drawable.IsDoubleSided;
                 _isInverted[unmanagedIndex] = drawable.IsInverted;
                 _renderOrders[unmanagedIndex] = renderOrders[unmanagedIndex];

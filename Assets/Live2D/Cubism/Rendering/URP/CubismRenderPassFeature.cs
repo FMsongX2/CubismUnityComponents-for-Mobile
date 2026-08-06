@@ -626,6 +626,33 @@ namespace Live2D.Cubism.Rendering.URP
             }
 
             /// <summary>
+            /// True when no batched model reads the destination while blending, i.e. the
+            /// offscreen buffer would only ever be composited with "over". That is
+            /// associative, so the buffer can be skipped without changing the result.
+            /// Callers must have established that every controller is batched first.
+            /// </summary>
+            internal static bool CanSkipBufferedComposition(CubismRenderController[] renderControllers)
+            {
+                for (var i = 0; i < renderControllers.Length; i++)
+                {
+                    var controller = renderControllers[i];
+
+                    if (!controller)
+                    {
+                        continue;
+                    }
+
+                    if (controller.BatchedRenderer == null
+                        || controller.BatchedRenderer.RequiresBufferedComposition)
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+
+            /// <summary>
             /// Orders controllers back-to-front for batched drawing (sorting order first,
             /// camera distance as tie break to mirror the legacy per-renderer sort).
             /// </summary>
@@ -1085,8 +1112,10 @@ namespace Live2D.Cubism.Rendering.URP
                     // Record-time path decisions, stored on the pass data so execution
                     // always matches the textures allocated here.
                     var allControllersBatched = AreAllControllersBatched(renderControllers);
-                    var drawDirectlyToCameraTarget = CubismBatchedRendering.DrawToCameraTargetDirectly
-                        && allControllersBatched;
+                    var drawDirectlyToCameraTarget = allControllersBatched
+                        && (CubismBatchedRendering.DrawToCameraTargetDirectly
+                            || (CubismBatchedRendering.AutoDrawToCameraTargetDirectly
+                                && CanSkipBufferedComposition(renderControllers)));
 
                     passData.AllControllersBatched = allControllersBatched;
                     passData.DrawDirectlyToCameraTarget = drawDirectlyToCameraTarget;

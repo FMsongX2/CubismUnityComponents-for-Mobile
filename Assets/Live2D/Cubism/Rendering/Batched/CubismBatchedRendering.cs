@@ -36,6 +36,16 @@ namespace Live2D.Cubism.Rendering
         public static bool DrawToCameraTargetDirectly = false;
 
         /// <summary>
+        /// When true, the direct path is also taken automatically on frames where every
+        /// batched model only blends "over" (no Add, no Multiply). That case has no
+        /// semantic difference to protect: "over" is associative, so compositing into
+        /// the buffer first and compositing straight into the camera target produce the
+        /// same pixels. Set false to keep the direct path strictly opt-in through
+        /// <see cref="DrawToCameraTargetDirectly"/>.
+        /// </summary>
+        public static bool AutoDrawToCameraTargetDirectly = true;
+
+        /// <summary>
         /// When true, models whose textures share size/format/mips get a runtime
         /// <see cref="Texture2DArray"/> so texture switches stop splitting batches.
         /// The array duplicates the source textures in memory, so it is skipped on
