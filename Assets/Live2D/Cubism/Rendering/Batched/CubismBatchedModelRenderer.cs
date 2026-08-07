@@ -38,6 +38,36 @@ namespace Live2D.Cubism.Rendering
         /// </summary>
         public static int MaskAtlasSize = 1024;
 
+        /// <summary>
+        /// Resolution used below <see cref="MaskAtlasFullSizeMinimumSystemMemoryMegabytes"/>.
+        /// One atlas lives per model at ARGB32, so 1024 costs ~4 MB each and halving the
+        /// edge quarters that. The trade is mask edge quality: the tile layout floors a
+        /// tile at a quarter of the atlas, which is 256 px at 1024 and 128 px at 512,
+        /// and sharp small clip regions (hair strands, eyes) alias visibly below 256 px.
+        /// Set equal to <see cref="MaskAtlasSize"/> to disable the tier.
+        /// </summary>
+        public static int MaskAtlasSizeLowMemory = 512;
+
+        /// <summary>
+        /// Minimum <see cref="SystemInfo.systemMemorySize"/> (MB) for the full-size mask
+        /// atlas. 0 disables the check.
+        /// </summary>
+        public static int MaskAtlasFullSizeMinimumSystemMemoryMegabytes = 3072;
+
+        /// <summary>
+        /// Mask atlas edge length after the device memory tier.
+        /// </summary>
+        internal static int EffectiveMaskAtlasSize
+        {
+            get
+            {
+                return (MaskAtlasFullSizeMinimumSystemMemoryMegabytes <= 0
+                        || SystemInfo.systemMemorySize >= MaskAtlasFullSizeMinimumSystemMemoryMegabytes)
+                    ? MaskAtlasSize
+                    : MaskAtlasSizeLowMemory;
+            }
+        }
+
 
         #region Static Shader Property IDs
 
@@ -1014,7 +1044,9 @@ namespace Live2D.Cubism.Rendering
 
             if (_maskAtlas == null)
             {
-                _maskAtlas = new RenderTexture(MaskAtlasSize, MaskAtlasSize, 0, RenderTextureFormat.ARGB32)
+                var atlasSize = EffectiveMaskAtlasSize;
+
+                _maskAtlas = new RenderTexture(atlasSize, atlasSize, 0, RenderTextureFormat.ARGB32)
                 {
                     name = _controller.Model.name + " MaskAtlas",
                     filterMode = FilterMode.Bilinear,
@@ -1022,7 +1054,21 @@ namespace Live2D.Cubism.Rendering
                     useMipMap = false,
                     autoGenerateMips = false
                 };
-                _maskAtlas.Create();
+
+                // Allocation can fail on a memory-starved device. Without this the
+                // renderer would keep recording mask draws into a texture that was
+                // never created, every frame, with no path back.
+                if (!_maskAtlas.Create())
+                {
+                    Debug.LogWarning("[CubismBatchedModelRenderer] Mask atlas allocation failed, falling back to legacy rendering.");
+
+                    _maskAtlas.Release();
+                    UnityEngine.Object.DestroyImmediate(_maskAtlas);
+                    _maskAtlas = null;
+                    _isBroken = true;
+
+                    return;
+                }
             }
 
             var cursor = 0;
