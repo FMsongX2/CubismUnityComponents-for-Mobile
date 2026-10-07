@@ -4,6 +4,7 @@
  * Use of this source code is governed by the Live2D Open Software license
  * that can be found at https://www.live2d.com/eula/live2d-open-software-license-agreement_en.html.
  */
+// 같은 pose group의 파츠가 교차 전환될 때 앞·뒤 파츠의 opacity와 연결 파츠를 함께 갱신합니다.
 
 
 using Live2D.Cubism.Core;
@@ -12,52 +13,32 @@ using UnityEngine;
 
 namespace Live2D.Cubism.Framework.Pose
 {
-    /// <summary>
-    /// Cubism pose controller.
-    /// </summary>
     public sealed class CubismPoseController : MonoBehaviour, ICubismUpdatable
     {
         #region variable
 
-        /// <summary>
-        /// Default visible pose index.
-        /// </summary>
         [SerializeField]
         public int defaultPoseIndex = 0;
 
-        /// <summary>
-        /// Back opacity threshold.
-        /// </summary>
         private const float BackOpacityThreshold = 0.15f;
 
-        /// <summary>
-        /// Cubism model cache.
-        /// </summary>
         private CubismModel _model;
 
-        /// <summary>
-        /// Model has update controller component.
-        /// </summary>
         [HideInInspector]
         public bool HasUpdateController { get; set; }
 
-        /// <summary>
-        /// Pose data.
-        /// </summary>
         private CubismPoseData[][] _poseData;
 
         #endregion
 
         #region Function
 
-        /// <summary>
-        /// update hidden part opacity.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         public void Refresh()
         {
             _model = this.FindCubismModel();
 
-            // Fail silently...
+            // 모델이 없으면 part 참조를 만들 수 없으므로 기존 cache를 사용하지 않습니다.
             if (_model == null)
             {
                 return;
@@ -107,13 +88,11 @@ namespace Live2D.Cubism.Framework.Pose
                 }
             }
 
-            // Get cubism update controller.
+            // 공용 update controller가 이 pose 실행 순서를 관리하는지 저장합니다.
             HasUpdateController = (GetComponent<CubismUpdateController>() != null);
         }
 
-        /// <summary>
-        /// update hidden part opacity.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void DoFade()
         {
             for(var groupIndex = 0; groupIndex < _poseData.Length; ++groupIndex)
@@ -121,7 +100,7 @@ namespace Live2D.Cubism.Framework.Pose
                 var appearPartsGroupIndex = -1;
                 var appearPartsGroupOpacity = 1.0f;
 
-                // Find appear parts group index and opacity.
+                // 직전 저장값보다 opacity가 커진 새 전면 part와 현재 opacity를 찾습니다.
                 for (var i = 0; i < _poseData[groupIndex].Length; ++i)
                 {
                     var part = _poseData[groupIndex][i].Part;
@@ -134,16 +113,16 @@ namespace Live2D.Cubism.Framework.Pose
                     }
                 }
 
-                // Fail silently...
+                // 나타나는 part가 없는 group은 뒤 part를 감출 필요가 없습니다.
                 if(appearPartsGroupIndex < 0)
                 {
                     continue;
                 }
 
-                // Delay disappearing parts groups disappear.
+                // 새 part가 나타나는 동안 나머지 part는 겹침 한도를 넘지 않게 늦춰 사라집니다.
                 for (var i = 0; i < _poseData[groupIndex].Length; ++i)
                 {
-                    // Fail silently...
+                    // 현재 나타나는 part 자신은 뒤 opacity 제한 대상에서 제외합니다.
                     if(i == appearPartsGroupIndex)
                     {
                         continue;
@@ -153,13 +132,13 @@ namespace Live2D.Cubism.Framework.Pose
                     var delayedOpacity = part.Opacity;
                     var backOpacity = (1.0f - delayedOpacity) * (1.0f - appearPartsGroupOpacity);
 
-                    // When restricting the visible proportion of the background
+                    // 전면·후면이 동시에 보이는 비율이 임계값을 넘으면 후면 값을 낮춥니다.
                     if (backOpacity > BackOpacityThreshold)
                     {
                         delayedOpacity = 1.0f - BackOpacityThreshold / (1.0f - appearPartsGroupOpacity);
                     }
 
-                    // Overwrite the opacity if it's greater than the delayed opacity.
+                    // animation이 더 큰 opacity를 썼더라도 계산한 후면 한도를 우선합니다.
                     if (part.Opacity > delayedOpacity)
                     {
                         part.Opacity = delayedOpacity;
@@ -168,9 +147,7 @@ namespace Live2D.Cubism.Framework.Pose
             }
         }
 
-        /// <summary>
-        /// Copy opacity to linked parts.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void CopyPartOpacities()
         {
             for(var groupIndex = 0; groupIndex < _poseData.Length; ++groupIndex)
@@ -199,9 +176,7 @@ namespace Live2D.Cubism.Framework.Pose
             }
         }
 
-        /// <summary>
-        /// Save parts opacity.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void SavePartOpacities()
         {
             for(var groupIndex = 0; groupIndex < _poseData.Length; ++groupIndex)
@@ -213,28 +188,20 @@ namespace Live2D.Cubism.Framework.Pose
             }
         }
 
-        /// <summary>
-        /// Called by cubism update controller. Order to invoke OnLateUpdate.
-        /// </summary>
         public int ExecutionOrder
         {
             get { return CubismUpdateExecutionOrder.CubismPoseController; }
         }
 
-        /// <summary>
-        /// Called by cubism update controller. Needs to invoke OnLateUpdate on Editing.
-        /// </summary>
         public bool NeedsUpdateOnEditing
         {
             get { return false; }
         }
 
-        /// <summary>
-        /// Called by cubism update manager. Updates controller.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         public void OnLateUpdate()
         {
-            // Fail silently...
+            // 비활성·미초기화 상태에서는 part opacity 일부만 바꾸지 않고 갱신을 건너뜁니다.
             if (!enabled || _model == null || _poseData == null)
             {
                return;
@@ -249,17 +216,13 @@ namespace Live2D.Cubism.Framework.Pose
 
         #region Unity Event Handling
 
-        /// <summary>
-        /// Called by Unity. Makes sure cache is initialized.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void OnEnable()
         {
             Refresh();
         }
 
-        /// <summary>
-        /// Called by Unity.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void LateUpdate()
         {
             if(!HasUpdateController)

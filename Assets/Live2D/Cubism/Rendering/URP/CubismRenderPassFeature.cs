@@ -4,6 +4,7 @@
  * Use of this source code is governed by the Live2D Open Software license
  * that can be found at https://www.live2d.com/eula/live2d-open-software-license-agreement_en.html.
  */
+// 렌더 전후 interceptor가 현재 Cubism draw의 pass·buffer·정렬 정보를 읽도록 전달하는 값입니다.
 
 
 using Live2D.Cubism.Core;
@@ -16,200 +17,74 @@ using UnityEngine.Rendering.Universal;
 
 namespace Live2D.Cubism.Rendering.URP
 {
-    /// <summary>
-    /// Provides data for rendering events `CubismRenderingInterceptorsManager.GetInstance().OnPreRendering` and `CubismRenderingInterceptorsManager.GetInstance().OnPostRendering`.
-    /// </summary>
     public struct CubismRenderedEventArgs
     {
-        /// <summary>
-        /// Render pass data.
-        /// </summary>
         public CubismRenderPassFeature.CubismRenderPass.PassData PassData;
-        /// <summary>
-        /// Command buffer for rendering.
-        /// </summary>
         public CommandBuffer CommandBuffer;
-        /// <summary>
-        /// Color buffer render texture.
-        /// </summary>
         public RenderTexture ColorBuffer;
-        /// <summary>
-        /// Depth buffer texture handle.
-        /// </summary>
         public TextureHandle DepthBuffer;
-        /// <summary>
-        /// Sorting mode of the draw object's render controller.
-        /// </summary>
         public CubismSortingMode SortingMode;
-        /// <summary>
-        /// Group sorting order.
-        /// </summary>
         public int GroupSortingOrder;
-        /// <summary>
-        /// Sorting order of the draw object.
-        /// NOTE: If SortingMode is set to sort by depth, multiple draw objects may have the same sorting order.
-        /// </summary>
         public int SortingOrder;
-        /// <summary>
-        /// The drawable being rendered.
-        /// </summary>
         public CubismDrawable Drawable;
-        /// <summary>
-        /// Distance to the camera.
-        /// NOTE: If SortingMode is set to sort by order, multiple draw objects may have the same distance.
-        /// </summary>
         public float Distance;
-        /// <summary>
-        /// Distance to the previous draw object in the sorted order.
-        /// </summary>
         public float? PreviousDistance;
-        /// <summary>
-        /// Distance to the next draw object in the sorted order.
-        /// </summary>
         public float? NextDistance;
-        /// <summary>
-        /// Position of the camera.
-        /// </summary>
         public Vector3 CameraPos;
-        /// <summary>
-        /// Forward direction of the camera.
-        /// </summary>
         public Vector3 CameraForward;
     }
 
-    /// <summary>
-    /// Scriptable renderer feature for rendering Cubism models in URP.
-    /// </summary>
     public class CubismRenderPassFeature : ScriptableRendererFeature
     {
-        /// <summary>
-        /// Greater than or equal to comparison value on Z Test.
-        /// </summary>
         internal static readonly int GEqual = 7;
 
-        /// <summary>
-        /// Less than or equal to comparison value on Z Test.
-        /// </summary>
         internal static readonly int LEqual = 4;
 
-        /// <summary>
-        /// Scriptable render pass for rendering Cubism models.
-        /// </summary>
         public class CubismRenderPass : ScriptableRenderPass
         {
-            /// <summary>
-            /// Structure that groups renderers by their sorting index.
-            /// </summary>
             private struct RendererGroupData
             {
-                /// <summary>
-                /// Sorting index for the renderer group.
-                /// </summary>
                 public int SortingIndex;
 
-                /// <summary>
-                /// Array of render controllers in this group.
-                /// </summary>
                 public CubismRenderController[] RenderControllers;
 
-                /// <summary>
-                /// Array of renderers in this group.
-                /// </summary>
                 public CubismRenderer[] Renderers;
             }
 
-            /// <summary>
-            /// Command buffer used for rendering operations.
-            /// </summary>
             private static CommandBuffer _commandBuffer;
 
-            /// <summary>
-            /// Array of renderer groups sorted by their sorting index.
-            /// </summary>
             private static RendererGroupData[] _sortedRendererGroupDataArray;
 
-            /// <summary>
-            /// Mesh used for blitting render textures.
-            /// </summary>
             private static Mesh _blitRenderTextureMesh;
 
-            /// <summary>
-            /// Material used for blitting render textures.
-            /// </summary>
             private static Material _blitRenderTextureMaterial;
 
-            /// <summary>
-            /// This class stores the data needed by the RenderGraph pass.
-            /// It is passed as a parameter to the delegate function that executes the RenderGraph pass.
-            /// </summary>
             public class PassData
             {
-                /// <summary>
-                /// Array of render controllers to be rendered.
-                /// </summary>
                 public CubismRenderController[] RenderControllers;
 
-                /// <summary>
-                /// Array of render controller groups.
-                /// </summary>
                 public CubismRenderControllerGroup.RenderControllerGroupData[] RenderControllerGroupDaraArray;
 
-                /// <summary>
-                /// Camera data for the current rendering pass.
-                /// </summary>
                 public UniversalCameraData CameraData;
 
-                /// <summary>
-                /// Resource data for the current rendering pass.
-                /// </summary>
                 public UniversalResourceData ResourceData;
 
-                /// <summary>
-                /// Texture handle for mask rendering.
-                /// </summary>
                 public TextureHandle MaskTextureHandle;
 
-                /// <summary>
-                /// Texture handle for the camera render target.
-                /// </summary>
                 public TextureHandle CameraTextureHandle;
 
-                /// <summary>
-                /// Texture handle for the camera depth buffer.
-                /// </summary>
                 public TextureHandle CameraDepthTextureHandle;
 
-                /// <summary>
-                /// Texture handle for common rendering operations.
-                /// </summary>
                 public TextureHandle CommonRenderingTextureHandle;
 
-                /// <summary>
-                /// Texture handle for temporary rendering operations.
-                /// </summary>
                 public TextureHandle CommonTemporaryTextureHandle;
 
-                /// <summary>
-                /// Record-time decision: every registered controller renders batched.
-                /// Reused at execute time so the pass never routes a model down a
-                /// path whose textures were not allocated for this frame.
-                /// </summary>
                 public bool AllControllersBatched;
 
-                /// <summary>
-                /// Record-time decision: draw straight into the camera target.
-                /// </summary>
                 public bool DrawDirectlyToCameraTarget;
             }
 
-            /// <summary>
-            /// Sets up and fills the renderer group.
-            /// </summary>
-            /// <param name="targetIndex">Target index in the sorted renderer groups array.</param>
-            /// <param name="target">Added target renderer group.</param>
-            /// <param name="source">Source render controller group.</param>
-            /// <param name="cameraPos">Position of the camera</param>
-            /// <param name="data">Pass data containing render controller groups and camera data</param>
+            /// 입력: targetIndex(int), target(RendererGroupData), source(CubismRenderControllerGroup.RenderControllerGroupData), cameraPos(Vector3), data(PassData); 반환: 없음.
             private static void SetUpRendererGroup(int targetIndex, RendererGroupData target, CubismRenderControllerGroup.RenderControllerGroupData source, Vector3 cameraPos, PassData data)
             {
                 var previousCount = 0;
@@ -224,28 +99,25 @@ namespace Live2D.Cubism.Rendering.URP
                         continue;
                     }
 
-                    // Copy the renderers from the controller to the sorted array.
+                    // controller 소유 렌더러를 이 sorting group의 연속 배열로 복사합니다.
                     for (var rendererIndex = 0; rendererIndex < controller.Renderers.Length; rendererIndex++)
                     {
                         target.Renderers[previousCount + rendererIndex] = controller.Renderers[rendererIndex];
                         target.Renderers[previousCount + rendererIndex].IsLastDrawObjectInModel = false;
                     }
 
-                    // Update the previous count for the next controller
+                    // 다음 controller의 복사 시작 위치를 갱신합니다.
                     previousCount += controller.Renderers.Length;
                 }
 
-                // Sort the renderers by their sorting order.
+                // 채운 renderer 배열을 현재 정렬 규칙으로 정렬합니다.
                 SortBySortingOrder(target.Renderers, cameraPos, data.CameraData.camera.transform.forward);
 
-                // Assign the filled target to the sorted renderer groups array.
+                // 완성한 group을 frame 간 재사용 배열의 대상 위치에 기록합니다.
                 _sortedRendererGroupDataArray[targetIndex] = target;
             }
 
-            /// <summary>
-            /// Sorts the renderer groups based on their sorting order.
-            /// </summary>
-            /// <param name="data">Pass data containing render controller groups.</param>
+            /// 입력: data(PassData); 반환: 없음.
             private static void SortingRendererGroups(PassData data)
             {
                 var didChangeSortingRenderControllerGroup = CubismRenderControllerGroup.GetInstance().DidChangeSortingRenderControllerGroup;
@@ -255,7 +127,7 @@ namespace Live2D.Cubism.Rendering.URP
                     return;
                 }
 
-                // Iterate through each render controller group.
+                // controller group마다 변경 여부와 renderer 수를 검사합니다.
                 for (var groupsIndex = 0; groupsIndex < data.RenderControllerGroupDaraArray.Length; groupsIndex++)
                 {
                     var group = data.RenderControllerGroupDaraArray[groupsIndex];
@@ -266,16 +138,16 @@ namespace Live2D.Cubism.Rendering.URP
                     {
                         var controller = group.Controllers[i];
 
-                        // Skip if controller is null or has no renderers
+                        // controller가 없거나 renderer가 없으면 이 group에 넣지 않습니다.
                         if (!controller || controller.Renderers == null)
                         {
                             continue;
                         }
 
-                        // Update sorting state from camera position.
+                        // 현재 카메라 위치로 depth 정렬 필요 상태를 갱신합니다.
                         controller.UpdateDidChangeSortingFromZ(data.CameraData.worldSpaceCameraPos);
 
-                        // Update offscreen render order if it has changed.
+                        // offscreen 계층 순서가 바뀌었으면 관련 정렬 상태를 갱신합니다.
                         if (controller.DidChangeDrawableRenderOrder)
                         {
                             for (var offscreenIndex = 0; offscreenIndex < controller.OffscreenRenderers?.Length; offscreenIndex++)
@@ -285,7 +157,7 @@ namespace Live2D.Cubism.Rendering.URP
                             }
                         }
 
-                        // Check if any controller has changed its drawable render order.
+                        // 어떤 controller라도 native Drawable 순서를 바꿨는지 누적합니다.
                         didChangeSortingOrder |=
                             controller.DidChangeSorting
                              || controller.DidChangeDrawableRenderOrder
@@ -294,13 +166,13 @@ namespace Live2D.Cubism.Rendering.URP
                         rendererCount += controller.Renderers.Length;
                     }
 
-                    // If nothing changed, no need to sort again.
+                    // renderer 구성과 정렬 상태가 그대로면 기존 정렬 배열을 재사용합니다.
                     if (!didChangeSortingOrder)
                     {
                         continue;
                     }
 
-                    // Create an empty array if it doesn't exist or its size doesn't match the number of groups.
+                    // group 수가 달라졌을 때만 정렬 group 캐시 배열을 새로 만듭니다.
                     if (_sortedRendererGroupDataArray == null
                         || _sortedRendererGroupDataArray.Length > data.RenderControllerGroupDaraArray.Length)
                     {
@@ -320,7 +192,7 @@ namespace Live2D.Cubism.Rendering.URP
 
                         if (target.Renderers.Length != rendererCount)
                         {
-                            // Resize the renderers array to fit all renderers in the group.
+                            // 합쳐진 renderer 수만큼 group 내부 배열을 확장합니다.
                             Array.Resize(ref target.Renderers, rendererCount);
                         }
 
@@ -343,20 +215,20 @@ namespace Live2D.Cubism.Rendering.URP
                             target.RenderControllers = data.RenderControllerGroupDaraArray[groupsIndex].Controllers;
                         }
 
-                        // Set up and fill the renderer group.
+                        // 기존 group 슬롯에 controller·renderer 정렬 결과를 채웁니다.
                         SetUpRendererGroup(targetIndex, target, group, data.CameraData.worldSpaceCameraPos, data);
 
                         hasGroupFound = true;
                         break;
                     }
 
-                    // Initialize the renderer group if necessary
+                    // 새 group 슬롯이면 controller 배열과 정렬 배열을 초기화합니다.
                     if (hasGroupFound)
                     {
                         continue;
                     }
 
-                    // Resize the sorted renderer groups array to add a new group.
+                    // 새 sorting index를 담도록 group 캐시 배열을 확장합니다.
                     Array.Resize(ref _sortedRendererGroupDataArray, _sortedRendererGroupDataArray.Length + 1);
                     var newRendererGroup = new RendererGroupData
                     {
@@ -365,18 +237,12 @@ namespace Live2D.Cubism.Rendering.URP
                         Renderers = new CubismRenderer[rendererCount]
                     };
 
-                    // Set up and fill the renderer group.
+                    // 새 group 슬롯에 controller·renderer 정렬 결과를 기록합니다.
                     SetUpRendererGroup(_sortedRendererGroupDataArray.Length - 1, newRendererGroup, group, data.CameraData.worldSpaceCameraPos,data);
                 }
             }
 
-            /// <summary>
-            /// Sorts the renderers by their sorting order.
-            /// Calculates the distance to camera for each renderer and sorts them accordingly.
-            /// </summary>
-            /// <param name="renderers">Array of renderers to sort</param>
-            /// <param name="cameraPosition">Position of the camera</param>
-            /// <param name="cameraForward">Forward direction of the camera (normalized vector)</param>
+            /// 입력: renderers(CubismRenderer[]), cameraPosition(Vector3), cameraForward(Vector3); 반환: 없음.
             private static void SortBySortingOrder(CubismRenderer[] renderers, Vector3 cameraPosition, Vector3 cameraForward)
             {
                 for (var index = 0; index < renderers.Length; index++)
@@ -387,15 +253,10 @@ namespace Live2D.Cubism.Rendering.URP
                 Array.Sort(renderers, CompareBySortingOrder);
             }
 
-            /// <summary>
-            /// Compares two renderers by their sorting order.
-            /// </summary>
-            /// <param name="a">First renderer to compare</param>
-            /// <param name="b">Second renderer to compare</param>
-            /// <returns>Negative value if a should be rendered before b, positive if after, zero if equal.</returns>
+            /// 입력: a(CubismRenderer), b(CubismRenderer); 반환: int.
             private static int CompareBySortingOrder(CubismRenderer a, CubismRenderer b)
             {
-                // Fail-safe check
+                // null renderer가 들어온 경우 정렬 비교가 깨지지 않도록 순서를 정합니다.
                 if (!a || !b
                        || !a.MeshRenderer || !b.MeshRenderer
                        || !a.RenderController || !b.RenderController)
@@ -411,7 +272,7 @@ namespace Live2D.Cubism.Rendering.URP
                     return result;
                 }
 
-                // If sorting order is the same, compare by local Z position.
+                // sorting order가 같으면 local Z로 앞뒤 draw 순서를 결정합니다.
                 var sortValue = (b.DistanceToCamera / b.RenderController.DepthOffset) - (a.DistanceToCamera / a.RenderController.DepthOffset);
                 result = sortValue >= 0.0f
                     ? Mathf.CeilToInt(sortValue)
@@ -420,12 +281,10 @@ namespace Live2D.Cubism.Rendering.URP
                 return result;
             }
 
-            /// <summary>
-            /// Checks and sets the skip rendering flag for each renderer.
-            /// </summary>
+            /// 입력: 없음; 반환: 없음.
             private static void CheckRenderingSkip()
             {
-                // Reset skip rendering flag for each renderer.
+                // 이전 pass의 SkipRendering 값을 먼저 모두 해제합니다.
                 for (var groupIndex = 0; groupIndex < _sortedRendererGroupDataArray.Length; groupIndex++)
                 {
                     var rendererGroup = _sortedRendererGroupDataArray[groupIndex];
@@ -436,7 +295,7 @@ namespace Live2D.Cubism.Rendering.URP
                     }
                 }
 
-                // Check and set skip rendering flag for each renderer.
+                // offscreen 소유 관계와 가시 상태를 읽어 이번 pass에서 건너뛸 renderer를 표시합니다.
                 for (var groupIndex = 0; groupIndex < _sortedRendererGroupDataArray.Length; groupIndex++)
                 {
                     var rendererGroup = _sortedRendererGroupDataArray[groupIndex];
@@ -471,7 +330,7 @@ namespace Live2D.Cubism.Rendering.URP
                                     break;
                                 }
 
-                                // Skip rendering for all child drawables and offscreens of the offscreen part.
+                                // 비활성 offscreen part의 모든 자식 Drawable·Offscreen도 함께 건너뜁니다.
                                 var parts = renderer.RenderController?.Model?.Parts;
                                 CubismPart part = null;
                                 for (var partIndex = 0; partIndex < parts?.Length; partIndex++)
@@ -491,7 +350,7 @@ namespace Live2D.Cubism.Rendering.URP
                                     break;
                                 }
 
-                                // Skip rendering for all child drawables and offscreens of the offscreen part.
+                                // 부모 offscreen이 현재 target이 아니면 그 하위 draw object도 건너뜁니다.
                                 for (var drawablesIndex = 0; drawablesIndex < part.AllChildDrawables?.Length; drawablesIndex++)
                                 {
                                     var childDrawable = part.AllChildDrawables[drawablesIndex];
@@ -541,7 +400,7 @@ namespace Live2D.Cubism.Rendering.URP
                 {
                     var target = _sortedRendererGroupDataArray[i];
 
-                    // Reset the last draw object flag for each renderer.
+                    // 이전 그룹의 마지막 draw object 표식을 모두 지웁니다.
                     for (var rendererIndex = 0; rendererIndex < target.Renderers.Length; rendererIndex++)
                     {
                         var targetRenderer = target.Renderers[rendererIndex];
@@ -564,11 +423,11 @@ namespace Live2D.Cubism.Rendering.URP
                         {
                             var targetRenderer = target.Renderers[lastIndex];
 
-                            // Find the last draw renderer in the sorted array.
+                            // 정렬 배열의 마지막 실제 draw renderer를 찾습니다.
                             if (!targetRenderer.SkipRendering
                                 && targetRenderer.RenderController == controller)
                             {
-                                // Mark it as the last draw object in the model.
+                                // 모델의 마지막 draw object임을 표시해 합성 종료 시점을 알립니다.
                                 targetRenderer.IsLastDrawObjectInModel = true;
                                 break;
                             }
@@ -579,30 +438,17 @@ namespace Live2D.Cubism.Rendering.URP
                 }
             }
 
-            /// <summary>
-            /// Reusable controller list for batched group drawing.
-            /// </summary>
             private static readonly System.Collections.Generic.List<CubismRenderController> _batchedControllers = new System.Collections.Generic.List<CubismRenderController>(8);
 
-            /// <summary>
-            /// Camera state for <see cref="CompareBatchedControllers"/>.
-            /// </summary>
             private static Vector3 _batchedSortCameraPosition;
             private static Vector3 _batchedSortCameraForward;
 
-            /// <summary>
-            /// Cached comparison to avoid per-frame allocations.
-            /// </summary>
             private static readonly Comparison<CubismRenderController> _batchedControllerComparison = CompareBatchedControllers;
 
-            /// <summary>
-            /// Reusable frustum plane buffer for the offscreen-model test.
-            /// </summary>
+            /// 화면 밖 모델 판정에 재사용하는 절두체 평면 버퍼.
             private static readonly Plane[] _batchedFrustumPlanes = new Plane[6];
 
-            /// <summary>
-            /// True when every registered render controller renders through the batched fast path.
-            /// </summary>
+            /// 입력: renderControllers(CubismRenderController[]); 반환: bool.
             internal static bool AreAllControllersBatched(CubismRenderController[] renderControllers)
             {
                 if (renderControllers == null || renderControllers.Length < 1)
@@ -630,12 +476,9 @@ namespace Live2D.Cubism.Rendering.URP
                 return true;
             }
 
-            /// <summary>
-            /// True when no batched model reads the destination while blending, i.e. the
-            /// offscreen buffer would only ever be composited with "over". That is
-            /// associative, so the buffer can be skipped without changing the result.
-            /// Callers must have established that every controller is batched first.
-            /// </summary>
+            /// 배치 모델 중 블렌드에서 목적지를 읽는 게 하나도 없는지. 그러면 오프스크린 버퍼는
+            /// "over"로만 합성되고 이는 결합법칙이 성립하므로 버퍼를 건너뛰어도 결과가 같습니다.
+            /// 호출 전에 전 컨트롤러가 배치 상태임이 확인돼 있어야 합니다.
             internal static bool CanSkipBufferedComposition(CubismRenderController[] renderControllers)
             {
                 for (var i = 0; i < renderControllers.Length; i++)
@@ -657,10 +500,7 @@ namespace Live2D.Cubism.Rendering.URP
                 return true;
             }
 
-            /// <summary>
-            /// Orders controllers back-to-front for batched drawing (sorting order first,
-            /// camera distance as tie break to mirror the legacy per-renderer sort).
-            /// </summary>
+            /// 입력: a(CubismRenderController), b(CubismRenderController); 반환: int.
             private static int CompareBatchedControllers(CubismRenderController a, CubismRenderController b)
             {
                 if (!a || !b)
@@ -678,13 +518,11 @@ namespace Live2D.Cubism.Rendering.URP
                 var distanceA = Vector3.Dot(a.transform.position - _batchedSortCameraPosition, _batchedSortCameraForward);
                 var distanceB = Vector3.Dot(b.transform.position - _batchedSortCameraPosition, _batchedSortCameraForward);
 
-                // Larger distance draws first (back to front).
+                // 카메라에서 먼 controller를 먼저 그려 back-to-front 순서를 만듭니다.
                 return distanceB.CompareTo(distanceA);
             }
 
-            /// <summary>
-            /// Records mask atlas passes and main batch draws for one group of batched controllers.
-            /// </summary>
+            /// 입력: commandBuffer(CommandBuffer), data(PassData), controllers(CubismRenderController[]), drawToCameraTarget(bool); 반환: 없음.
             private static void DrawGroupBatched(CommandBuffer commandBuffer, PassData data, CubismRenderController[] controllers, bool drawToCameraTarget)
             {
                 _batchedControllers.Clear();
@@ -708,8 +546,8 @@ namespace Live2D.Cubism.Rendering.URP
                         continue;
                     }
 
-                    // Skipping the whole controller also skips its mesh upload; the
-                    // dirty ranges keep merging and land in one flush when it returns.
+                    // 컨트롤러를 통째로 건너뛰면 mesh 업로드도 건너뜁니다.
+                    // 더티 범위는 계속 병합되다가 다시 보일 때 한 번에 flush됩니다.
                     if (cullOffscreen && controller.BatchedRenderer.IsCulledBy(_batchedFrustumPlanes))
                     {
                         continue;
@@ -731,8 +569,7 @@ namespace Live2D.Cubism.Rendering.URP
                     _batchedControllers.Sort(_batchedControllerComparison);
                 }
 
-                // Upload dirty mesh data and render all mask atlases first, so the main
-                // target is only bound once per group.
+                // dirty mesh를 먼저 GPU에 올리고 모든 mask atlas를 그린 뒤, main target은 group당 한 번만 바인딩합니다.
                 for (var i = 0; i < _batchedControllers.Count; i++)
                 {
                     var batchedRenderer = _batchedControllers[i].BatchedRenderer;
@@ -756,18 +593,13 @@ namespace Live2D.Cubism.Rendering.URP
                 }
             }
 
-            /// <summary>
-            /// Draws a sorted renderer group through the batched fast path when all its
-            /// controllers qualify.
-            /// </summary>
-            /// <returns>True when the group was handled.</returns>
+            /// 입력: commandBuffer(CommandBuffer), data(PassData), rendererGroup(ref RendererGroupData); 반환: bool.
             private static bool TryDrawGroupBatched(CommandBuffer commandBuffer, PassData data, ref RendererGroupData rendererGroup)
             {
                 var controllers = rendererGroup.RenderControllers;
 
-                // When the record-time check already proved every controller batched,
-                // skip the per-group re-check: the legacy fallback would reference
-                // full-screen textures that were never allocated for this frame.
+                // Record 시 모든 controller가 배치 가능으로 확정됐으면 재검사하지 않습니다.
+                // 이 frame에는 legacy fullscreen texture를 만들지 않았으므로 fallback 접근 자체가 잘못됩니다.
                 if (controllers == null
                     || (!data.AllControllersBatched && !AreAllControllersBatched(controllers)))
                 {
@@ -776,7 +608,7 @@ namespace Live2D.Cubism.Rendering.URP
 
                 DrawGroupBatched(commandBuffer, data, controllers, false);
 
-                // Mirror the legacy per-group composite to the camera target.
+                // 배치 group 결과도 legacy와 같은 시점에 카메라 target으로 합성합니다.
                 if (CubismRenderControllerGroup.GetInstance().IsCopiedToCameraTexture)
                 {
                     _commandBuffer.SetRenderTarget(data.CameraTextureHandle, data.CameraDepthTextureHandle);
@@ -795,11 +627,7 @@ namespace Live2D.Cubism.Rendering.URP
                 return true;
             }
 
-            /// <summary>
-            /// Composites the common rendering texture onto the camera target.
-            /// </summary>
-            /// <param name="data">Pass data providing the texture handles.</param>
-            /// <param name="clearCommonAfter">True to clear the common texture afterwards (per-group compositing).</param>
+            /// 입력: data(PassData), clearCommonAfter(bool); 반환: 없음.
             private static void BlitCommonToCameraTarget(PassData data, bool clearCommonAfter)
             {
                 _commandBuffer.SetRenderTarget(data.CameraTextureHandle, data.CameraDepthTextureHandle);
@@ -818,15 +646,10 @@ namespace Live2D.Cubism.Rendering.URP
                 }
             }
 
-            /// <summary>
-            /// Draws the objects using the provided command buffer and pass data.
-            /// </summary>
-            /// <param name="commandBuffer">Command buffer to record draw commands.</param>
-            /// <param name="data">Pass data containing render controllers and camera data.</param>
-            /// <param name="drawDirectlyToCameraTarget">True when every group renders batched straight into the camera target.</param>
+            /// 입력: commandBuffer(CommandBuffer), data(PassData), drawDirectlyToCameraTarget(bool); 반환: 없음.
             private static void DrawObjects(CommandBuffer commandBuffer, PassData data, bool drawDirectlyToCameraTarget)
             {
-                // Fast path: no legacy models anywhere, no intermediate textures.
+                // 모든 모델이 배치 경로면 중간 legacy texture 없이 카메라 target에 바로 기록합니다.
                 if (drawDirectlyToCameraTarget)
                 {
                     var groups = data.RenderControllerGroupDaraArray;
@@ -839,10 +662,10 @@ namespace Live2D.Cubism.Rendering.URP
                     return;
                 }
 
-                // Clear offscreen render textures at the beginning of the draw call.
+                // 이번 draw 시작에 풀의 offscreen texture 내용을 초기화합니다.
                 CubismOffscreenRenderTextureManager.GetInstance().ClearRenderTextures(_commandBuffer);
 
-                // Check and set skip rendering flags for each renderer.
+                // 현재 offscreen 계층 기준으로 renderer별 SkipRendering 상태를 갱신합니다.
                 CheckRenderingSkip();
 
                 for (var groupIndex = 0; groupIndex < _sortedRendererGroupDataArray?.Length; groupIndex++)
@@ -854,15 +677,15 @@ namespace Live2D.Cubism.Rendering.URP
                         continue;
                     }
 
-                    // Batched fast path for groups whose models all qualify.
+                    // group의 모든 모델이 가능하면 공유 mesh 배치 경로를 기록합니다.
                     if (TryDrawGroupBatched(commandBuffer, data, ref _sortedRendererGroupDataArray[groupIndex]))
                     {
                         continue;
                     }
 
 #if UNITY_EDITOR
-                    // Calculate distance to camera for each renderer for CubismRenderInterceptorsManager events.
-                    // HACK: Unity may mix scene camera and game camera information, so recalculate the distance each time in the Editor.
+                    // interceptor 이벤트에 줄 카메라 거리를 각 renderer에 계산합니다.
+                    // 편집기에서는 Scene/Game 카메라 정보가 섞일 수 있어 매번 다시 계산합니다.
                     for (var rendererIndex = 0; rendererIndex < rendererGroup.Renderers.Length; rendererIndex++)
                     {
                         var target = rendererGroup.Renderers[rendererIndex];
@@ -880,7 +703,7 @@ namespace Live2D.Cubism.Rendering.URP
                     {
                         var renderer = rendererGroup.Renderers[rendererIndex];
 
-                        // Skip if renderer is null or inactive
+                        // renderer가 없거나 비활성이면 command를 기록하지 않습니다.
                         if (!renderer
                             || renderer.SkipRendering)
                         {
@@ -911,13 +734,13 @@ namespace Live2D.Cubism.Rendering.URP
                             CameraForward = data.CameraData.camera.transform.forward
                         };
 
-                        // Pre-rendering event.
+                        // 실제 draw 직전 interceptor가 command를 추가할 기회를 줍니다.
                         CubismRenderingInterceptorsManager.GetInstance().OnPreRendering(args);
 
-                        // Draw the object.
+                        // 현재 Drawable 또는 Offscreen의 draw command를 기록합니다.
                         renderer.DrawObject(commandBuffer, data);
 
-                        // Post-rendering event.
+                        // draw 직후 interceptor가 후처리 command를 추가할 기회를 줍니다.
                         CubismRenderingInterceptorsManager.GetInstance().OnPostRendering(args);
 
                         if (renderer.IsLastDrawObjectInModel)
@@ -926,28 +749,28 @@ namespace Live2D.Cubism.Rendering.URP
                         }
                     }
 
-                    // Blit the result back to the camera texture if needed.
+                    // 공용 texture에 쌓은 결과가 있으면 카메라 color target으로 합성합니다.
                     if (CubismRenderControllerGroup.GetInstance().IsCopiedToCameraTexture)
                     {
                         _commandBuffer.SetRenderTarget(data.CameraTextureHandle, data.CameraDepthTextureHandle);
 
-                        // Draw the full-screen quad to blit the common rendering texture to the camera texture.
+                        // fullscreen quad로 공용 texture를 카메라 texture에 그립니다.
                         _blitRenderTextureMaterial.SetTexture(CubismShaderVariables.MainTexture, data.CommonRenderingTextureHandle);
 
-                        // Check for reversed Z buffer.
+                        // 플랫폼의 reversed-Z 여부에 맞는 depth compare 값을 고릅니다.
                         var reversedZ = SystemInfo.usesReversedZBuffer ? GEqual : LEqual;
                         _blitRenderTextureMaterial.SetInt(CubismShaderVariables.ReversedZ, reversedZ);
 
-                        // Draw the full-screen quad.
+                        // 선택한 depth compare로 fullscreen 합성 mesh를 그립니다.
                         _commandBuffer.DrawMesh(_blitRenderTextureMesh, Matrix4x4.identity, _blitRenderTextureMaterial);
 
-                        // Clear the common rendering texture for the next group.
+                        // 다음 group 합성을 위해 공용 texture를 비웁니다.
                         _commandBuffer.SetRenderTarget(data.CommonRenderingTextureHandle);
                         _commandBuffer.ClearRenderTarget(true, true, Color.clear);
                     }
                 }
 
-                // Reset the flag after processing.
+                // frame 처리 뒤 controller의 순서 변경 플래그를 초기화합니다.
                 for (var i = 0; i < data.RenderControllers?.Length; i++)
                 {
                     var controller = data.RenderControllers[i];
@@ -963,16 +786,10 @@ namespace Live2D.Cubism.Rendering.URP
                 CubismRenderControllerGroup.GetInstance().DidChangeSortingRenderControllerGroup = false;
             }
 
-            /// <summary>
-            /// ExecutePass is the function that executes the render pass.
-            /// This static method is passed as the RenderFunc delegate to the RenderGraph render pass.
-            /// It is used to execute draw commands.
-            /// </summary>
-            /// <param name="data">Pass data containing render controllers, camera data, and texture handles.</param>
-            /// <param name="context">Render graph context for executing render commands.</param>
+            /// 입력: data(PassData), context(UnsafeGraphContext); 반환: 없음.
             private static void ExecutePass(PassData data, UnsafeGraphContext context)
             {
-                // Check if we have any render controllers to process
+                // 처리할 Cubism controller가 없으면 RenderGraph 실행을 생략합니다.
                 if (data.RenderControllers == null || data.RenderControllers.Length == 0)
                 {
                     return;
@@ -1000,10 +817,8 @@ namespace Live2D.Cubism.Rendering.URP
                     _blitRenderTextureMaterial = new Material(CubismBuiltinMaterials.UnlitBlit);
                 }
 
-                // When every model renders through the batched fast path, draw straight
-                // into the camera target: no intermediate texture, no clears, no blit.
-                // Uses the record-time decision so the executed path always matches the
-                // textures allocated for this frame.
+                // 모든 모델이 배치 경로면 중간 texture·clear·blit 없이 카메라 target에 직접 그립니다.
+                // Record 시 저장한 결정으로 실행 경로와 이 frame에 할당한 texture를 일치시킵니다.
                 if (data.DrawDirectlyToCameraTarget)
                 {
                     DrawObjects(_commandBuffer, data, true);
@@ -1012,25 +827,19 @@ namespace Live2D.Cubism.Rendering.URP
                 }
 
 #if UNITY_EDITOR
-                // HACK: In the editor, Scene view camera may not have the latest texture data.
+                // 편집기 Scene View 카메라는 최신 texture 상태가 아닐 수 있어 별도 경로를 유지합니다.
                 if (data.CameraData.isSceneViewCamera)
                 {
                     _commandBuffer.Blit(data.CameraTextureHandle, data.CommonRenderingTextureHandle);
                 }
 #endif
 
-                // Every model batched, buffered composition: draw straight from the
-                // live controller groups, mirroring the direct path's early-out. The
-                // legacy bookkeeping below — SortingRendererGroups, CheckRenderingSkip,
-                // the per-controller flag resets — exists solely to feed the
-                // per-renderer fallback loop and costs thousands of per-drawable
-                // native calls per frame; none of it is consumed when every group
-                // takes the batched path.
+                // 모든 모델이 배치 경로면 live controller group을 바로 그립니다.
+                // 아래 legacy 정렬·skip 검사·플래그 초기화는 per-Drawable fallback 전용이므로 이 경로에서는 수행하지 않습니다.
                 if (data.AllControllersBatched)
                 {
-                    // Color contents are fully cleared below — DontCare spares tilers
-                    // the load of the previous (undefined transient) contents. Camera
-                    // depth is scene state: it must load and stay stored for later passes.
+                    // color는 아래에서 완전히 clear하므로 이전 transient 내용을 tile memory에 불러올 필요가 없습니다.
+                    // camera depth는 이후 pass도 읽는 scene 상태이므로 load·store를 유지합니다.
                     _commandBuffer.SetRenderTarget(
                         data.CommonRenderingTextureHandle, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store,
                         data.CameraDepthTextureHandle, RenderBufferLoadAction.Load, RenderBufferStoreAction.Store);
@@ -1051,72 +860,65 @@ namespace Live2D.Cubism.Rendering.URP
 
                     if (!copyPerGroup)
                     {
-                        // The common texture is a per-frame transient; no trailing
-                        // clear is needed after the final composite.
+                        // 공용 texture는 frame 한정 transient라 최종 합성 뒤 clear할 필요가 없습니다.
                         BlitCommonToCameraTarget(data, false);
                     }
 
                     return;
                 }
 
-                // Sort the renderers by their sorting order.
+                // legacy renderer를 sorting order 기준으로 다시 정렬합니다.
                 SortingRendererGroups(data);
 
-                // Set render target with both color and depth buffers for proper depth testing.
-                // Color is fully cleared below, so its previous contents need not load.
+                // Unity 물체와 올바르게 depth test하도록 color·depth target을 함께 바인딩합니다.
+                // color는 아래에서 clear하므로 이전 내용은 load하지 않습니다.
                 _commandBuffer.SetRenderTarget(
                     data.CommonRenderingTextureHandle, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store,
                     data.CameraDepthTextureHandle, RenderBufferLoadAction.Load, RenderBufferStoreAction.Store);
                 _commandBuffer.ClearRenderTarget(false, true, Color.clear);
 
-                // Draw the objects.
+                // 정렬한 legacy draw object command를 기록합니다.
                 DrawObjects(_commandBuffer, data, false);
 
-                // Blit the result back to the camera texture.
+                // 공용 texture 결과를 카메라 color target으로 합성합니다.
                 if (!CubismRenderControllerGroup.GetInstance().IsCopiedToCameraTexture)
                 {
                     _commandBuffer.SetRenderTarget(data.CameraTextureHandle, data.CameraDepthTextureHandle);
 
-                    // Draw the full-screen quad to blit the common rendering texture to the camera texture.
+                    // fullscreen quad로 공용 texture를 카메라 texture에 그립니다.
                     _blitRenderTextureMaterial.SetTexture(CubismShaderVariables.MainTexture, data.CommonRenderingTextureHandle);
 
-                    // Check for reversed Z buffer.
+                    // reversed-Z 환경에 맞는 depth compare 값을 선택합니다.
                     var reversedZ = SystemInfo.usesReversedZBuffer? GEqual : LEqual;
                     _blitRenderTextureMaterial.SetInt(CubismShaderVariables.ReversedZ, reversedZ);
 
-                    // Draw the full-screen quad.
+                    // 선택한 depth compare로 fullscreen 합성을 기록합니다.
                     _commandBuffer.DrawMesh(_blitRenderTextureMesh, Matrix4x4.identity, _blitRenderTextureMaterial);
                 }
 
-                // Clear the common rendering texture for the next frame.
+                // 다음 frame의 legacy 합성을 위해 공용 texture를 비웁니다.
                 _commandBuffer.SetRenderTarget(data.CommonRenderingTextureHandle);
                 _commandBuffer.ClearRenderTarget(true, true, Color.clear);
             }
 
-            /// <summary>
-            /// This method is called by the render graph to record render passes.
-            /// RecordRenderGraph is where the RenderGraph handle can be accessed, through which render passes can be added to the graph.
-            /// FrameData is a context container through which URP resources can be accessed and managed.
-            /// </summary>
-            /// <param name="renderGraph">Render graph to add render passes to.</param>
-            /// <param name="frameData">Context container providing access to URP resources and camera data.</param>
+            /// 입력: renderGraph(RenderGraph), frameData(ContextContainer); 반환: 없음.
             public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
             {
                 const string renderCustomPass = "Cubism URP Render Pass";
 
-                // Get render controllers - this should work in both play mode and edit mode
+                // 플레이·편집 모드 모두에서 현재 등록된 render controller를 읽습니다.
                 var renderControllers = CubismRenderControllerGroup.GetInstance().RenderControllers;
 
-                // Skip if no render controllers are available
+                // 등록 controller가 없으면 pass를 RenderGraph에 추가하지 않습니다.
                 if (renderControllers == null || renderControllers.Length == 0)
                 {
                     return;
                 }
 
-                // This adds a raster render pass to the graph, specifying the name and the data type that will be passed to the ExecutePass function.
+                // ExecutePass에 전달할 데이터 타입과 이름을 지정해 raster pass를 등록합니다.
                 using (var builder = renderGraph.AddUnsafePass<PassData>(renderCustomPass, out var passData))
                 {
-                    // Set up pass data
+                    // controller·camera·URP resource를 pass 데이터에 기록합니다.
                     passData.RenderControllers = renderControllers;
 
                     var renderControllerGroups = CubismRenderControllerGroup.GetInstance().GroupDataArray;
@@ -1128,8 +930,7 @@ namespace Live2D.Cubism.Rendering.URP
                     passData.CameraData = cameraData;
                     passData.ResourceData = resourceData;
 
-                    // Record-time path decisions, stored on the pass data so execution
-                    // always matches the textures allocated here.
+                    // Record 시 경로를 결정해 pass 데이터에 보관하고, Execute가 같은 texture 구성만 사용하게 합니다.
                     var allControllersBatched = AreAllControllersBatched(renderControllers);
                     var drawDirectlyToCameraTarget = allControllersBatched
                         && (CubismBatchedRendering.DrawToCameraTargetDirectly
@@ -1139,8 +940,7 @@ namespace Live2D.Cubism.Rendering.URP
                     passData.AllControllersBatched = allControllersBatched;
                     passData.DrawDirectlyToCameraTarget = drawDirectlyToCameraTarget;
 
-                    // The composite target is only needed when models draw into it
-                    // instead of straight into the camera target.
+                    // 모델이 카메라 target 직행 대신 공용 texture에 그릴 때만 composite target을 만듭니다.
                     if (!drawDirectlyToCameraTarget)
                     {
                         var descriptor = resourceData.activeColorTexture.GetDescriptor(renderGraph);
@@ -1152,9 +952,8 @@ namespace Live2D.Cubism.Rendering.URP
                         builder.UseTexture(passData.CommonRenderingTextureHandle, AccessFlags.ReadWrite);
                     }
 
-                    // Only legacy-path models touch the temporary/mask full-screen
-                    // textures (high-precision masking, blend compositing); batched
-                    // models clip through their own mask atlas instead.
+                    // 임시·mask fullscreen texture는 고정밀 마스크·blend 합성이 필요한 legacy 모델만 사용합니다.
+                    // 배치 모델은 자체 mask atlas로 clipping합니다.
                     if (!allControllersBatched)
                     {
                         var descriptor = resourceData.activeColorTexture.GetDescriptor(renderGraph);
@@ -1171,47 +970,37 @@ namespace Live2D.Cubism.Rendering.URP
                         passData.MaskTextureHandle = maskTextureHandle;
                     }
 
-                    // This sets the render target of the pass to the active color texture. Change it to your own render target as needed.
+                    // 이 pass의 color output을 현재 활성 카메라 color texture로 지정합니다.
                     passData.CameraTextureHandle = resourceData.activeColorTexture;
                     builder.UseTexture(passData.CameraTextureHandle, AccessFlags.ReadWrite);
 
-                    // Set up depth buffer for proper depth testing with other Unity objects
+                    // Unity 다른 물체와 depth test하도록 camera depth texture를 연결합니다.
                     passData.CameraDepthTextureHandle = resourceData.activeDepthTexture;
                     builder.UseTexture(passData.CameraDepthTextureHandle);
 
-                    // Assigns the ExecutePass function to the render pass delegate. This will be called by the render graph when executing the pass.
+                    // RenderGraph가 pass 실행 때 호출할 ExecutePass delegate를 연결합니다.
                     builder.SetRenderFunc((PassData data, UnsafeGraphContext context) => ExecutePass(data, context));
                 }
             }
         }
 
-        /// <summary>
-        /// Scriptable render pass that will be injected into the renderer.
-        /// </summary>
         private CubismRenderPass _mScriptablePass;
 
-        /// <summary>
-        /// Creates the scriptable render pass and configures its injection point.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         public override void Create()
         {
             _mScriptablePass = new CubismRenderPass
             {
-                // Configures where the render pass should be injected.
+                // Cubism pass를 투명 오브젝트 이전 렌더 이벤트에 주입합니다.
                 renderPassEvent = RenderPassEvent.BeforeRenderingTransparents
             };
         }
 
-        /// <summary>
-        /// Injects one or multiple render passes into the renderer.
-        /// This method is called when setting up the renderer once per-camera.
-        /// </summary>
-        /// <param name="renderer">The scriptable renderer to add passes to.</param>
-        /// <param name="renderingData">Rendering state information.</param>
+        /// 입력: renderer(ScriptableRenderer), renderingData(ref RenderingData); 반환: 없음.
         public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
         {
 #if UNITY_EDITOR
-            // Skip adding the pass for scene view and game view cameras in the editor.
+            // 편집기 Scene View·Game View 카메라 중 중복 실행 대상에는 pass를 넣지 않습니다.
             if (!(renderingData.cameraData.cameraType == CameraType.Game
                 || renderingData.cameraData.cameraType == CameraType.SceneView))
             {

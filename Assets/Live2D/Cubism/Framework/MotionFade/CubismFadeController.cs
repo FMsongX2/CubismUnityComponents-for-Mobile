@@ -4,6 +4,7 @@
  * Use of this source code is governed by the Live2D Open Software license
  * that can be found at https://www.live2d.com/eula/live2d-open-software-license-agreement_en.html.
  */
+// Animator layer의 겹친 motion을 시간·layer weight·parameter별 fade 설정으로 혼합해 모델 값에 씁니다.
 
 
 using Live2D.Cubism.Core;
@@ -13,66 +14,31 @@ using UnityEngine;
 
 namespace Live2D.Cubism.Framework.MotionFade
 {
-    /// <summary>
-    /// Cubism fade controller.
-    /// </summary>
     [RequireComponent(typeof(Animator))]
     public class CubismFadeController : MonoBehaviour, ICubismUpdatable
     {
         #region Variable
 
-        /// <summary>
-        /// Cubism fade motion list.
-        /// </summary>
         [SerializeField]
         public CubismFadeMotionList CubismFadeMotionList;
 
-        /// <summary>
-        /// Parameters cache.
-        /// </summary>
         private CubismParameter[] DestinationParameters { get; set; }
 
-        /// <summary>
-        /// Parts cache.
-        /// </summary>
         private CubismPart[] DestinationParts { get; set; }
 
-        /// <summary>
-        /// Model has motion controller component.
-        /// </summary>
         private CubismMotionController _motionController;
 
-        /// <summary>
-        /// Model has cubism update controller component.
-        /// </summary>
         [HideInInspector]
         public bool HasUpdateController { get; set; }
 
-        /// <summary>
-        /// Fade state machine behavior set in the animator.
-        /// </summary>
         private ICubismFadeState[] _fadeStates;
 
-        /// <summary>
-        /// Model has animator component.
-        /// </summary>
         private Animator _animator;
 
-        /// <summary>
-        /// Restore parameter value.
-        /// </summary>
         private CubismParameterStore _parameterStore;
 
-        /// <summary>
-        /// Fading flags for each layer.
-        /// </summary>
         private bool[] _isFading;
 
-        /// <summary>
-        /// Precomputed curve lookup for one fade motion: destination parameter/part
-        /// index to curve index (-1 when the motion has no curve for it). Replaces
-        /// the per-frame O(destinations x curve ids) string scans in UpdateFade.
-        /// </summary>
         private sealed class FadeMotionCurveMap
         {
             public int[] ParameterCurveIndices;
@@ -84,10 +50,10 @@ namespace Live2D.Cubism.Framework.MotionFade
         private CubismParameter[] _curveMapParameters;
         private CubismPart[] _curveMapParts;
 
-
+        /// 입력: fadeMotion(CubismFadeMotionData); 반환: FadeMotionCurveMap.
         private FadeMotionCurveMap GetFadeMotionCurveMap(CubismFadeMotionData fadeMotion)
         {
-            // Destinations changed identity (model reload) -> all maps are stale.
+            // 모델 reload로 목적지 배열 참조가 달라지면 이전 curve 번호 map은 모두 무효입니다.
             if (_fadeMotionCurveMaps == null
                 || _curveMapParameters != DestinationParameters
                 || _curveMapParts != DestinationParts)
@@ -106,7 +72,7 @@ namespace Live2D.Cubism.Framework.MotionFade
             var ids = fadeMotion.ParameterIds;
             var idToCurve = new System.Collections.Generic.Dictionary<string, int>(ids.Length);
 
-            // First occurrence wins, matching the original forward scan.
+            // 같은 ID가 여러 번 나오면 기존 순방향 검색과 같게 첫 curve를 사용합니다.
             for (var k = 0; k < ids.Length; ++k)
             {
                 if (ids[k] != null && !idToCurve.ContainsKey(ids[k]))
@@ -143,14 +109,12 @@ namespace Live2D.Cubism.Framework.MotionFade
 
         #region Function
 
-        /// <summary>
-        /// Refreshes the controller. Call this method after adding and/or removing <see cref="CubismFadeParameter"/>s.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         public void Refresh()
         {
             _animator = GetComponent<Animator>();
 
-            // Fail silently...
+            // Animator가 없으면 fade 상태를 구성할 수 없으므로 현재 cache를 쓰지 않습니다.
             if (_animator == null)
             {
                 return;
@@ -161,7 +125,7 @@ namespace Live2D.Cubism.Framework.MotionFade
             _motionController = GetComponent<CubismMotionController>();
             _parameterStore = GetComponent<CubismParameterStore>();
 
-            // Get cubism update controller.
+            // 공용 update controller가 LateUpdate 순서를 관리하는지 한 번 저장합니다.
             HasUpdateController = (GetComponent<CubismUpdateController>() != null);
 
             _fadeStates = (ICubismFadeState[])_animator.GetBehaviours<CubismFadeStateObserver>();
@@ -178,31 +142,20 @@ namespace Live2D.Cubism.Framework.MotionFade
             _isFading = new bool[_fadeStates.Length];
         }
 
-        /// <summary>
-        /// Called by cubism update controller. Order to invoke OnLateUpdate.
-        /// </summary>
         public int ExecutionOrder
         {
             get { return CubismUpdateExecutionOrder.CubismFadeController; }
         }
 
-        /// <summary>
-        /// Called by cubism update controller. Needs to invoke OnLateUpdate on Editing.
-        /// </summary>
         public bool NeedsUpdateOnEditing
         {
             get { return false; }
         }
 
-        /// <summary>
-        /// Called by cubism update controller. Updates controller.
-        /// </summary>
-        /// <remarks>
-        /// Make sure this method is called after any animations are evaluated.
-        /// </remarks>
+        /// 입력: 없음; 반환: 없음.
         public void OnLateUpdate()
         {
-            // Fail silently.
+            // 비활성·미초기화 상태에서는 model 값을 일부만 쓰지 않고 이번 갱신을 건너뜁니다.
             if (!enabled || _fadeStates == null || _parameterStore == null
                || DestinationParameters == null || DestinationParts == null)
             {
@@ -255,7 +208,7 @@ namespace Live2D.Cubism.Framework.MotionFade
                         continue;
                     }
 
-                    // If fade-in has been completed, delete the motion that has been played back.
+                    // 새 motion fade-in이 끝났으면 종료 시각을 지난 이전 motion을 목록에서 제거합니다.
                     _fadeStates[i].StopAnimation(j);
                 }
             }
@@ -268,7 +221,7 @@ namespace Live2D.Cubism.Framework.MotionFade
             _parameterStore.RestoreParameters();
 
 
-            // Update sources and destinations.
+            // 진행 중 layer만 원본 parameter를 기준으로 다시 혼합해 목적지에 씁니다.
             for (var i = 0; i < _fadeStates.Length; ++i)
             {
                 if (!_isFading[i])
@@ -279,27 +232,24 @@ namespace Live2D.Cubism.Framework.MotionFade
             }
         }
 
-        /// <summary>
-        /// Update motion fade.
-        /// </summary>
-        /// <param name="fadeState">Fade state observer.</param>
+        /// 입력: fadeState(ICubismFadeState); 반환: 없음.
         private void UpdateFade(ICubismFadeState fadeState)
         {
             var playingMotions = fadeState.GetPlayingMotions();
 
             if (playingMotions == null)
             {
-                // Do not process if there is only one motion, if it does not switch.
+                // 재생 목록 자체가 없으면 전환할 motion도 없으므로 계산하지 않습니다.
                 return;
             }
 
-            // Weight set for the layer being processed.
-            // (In the case of the layer located at the top, it is forced to 1.)
+            // 이 layer의 결과 전체에 곱할 weight를 읽습니다.
+            // 최상위 layer는 상태 구현에서 weight 1로 제공됩니다.
             var layerWeight = fadeState.GetLayerWeight();
 
             var time = Time.time;
 
-            // Calculate MotionFade.
+            // 이전 motion부터 현재 motion까지 각각의 fade-in/out 값을 계산합니다.
             for (var i = 0; i < playingMotions.Count; i++)
             {
                 var playingMotion = playingMotions[i];
@@ -331,14 +281,14 @@ namespace Live2D.Cubism.Framework.MotionFade
 
                 var curveMap = GetFadeMotionCurveMap(fadeMotion);
 
-                // Apply to parameter values
+                // motion curve가 있는 모델 parameter에 혼합 결과를 씁니다.
                 for (var j = 0; j < DestinationParameters.Length; ++j)
                 {
                     var index = curveMap.ParameterCurveIndices[j];
 
                     if (index < 0)
                     {
-                        // There is not target ID curve in motion.
+                        // 이 motion에 해당 parameter ID curve가 없으면 원래 값을 유지합니다.
                         continue;
                     }
 
@@ -364,14 +314,14 @@ namespace Live2D.Cubism.Framework.MotionFade
                     DestinationParameters[j].OverrideValue(value);
                 }
 
-                // Apply to part opacities
+                // motion curve가 있는 모델 part opacity에도 같은 fade 규칙을 적용합니다.
                 for (var j = 0; j < DestinationParts.Length; ++j)
                 {
                     var index = curveMap.PartCurveIndices[j];
 
                     if (index < 0)
                     {
-                        // There is not target ID curve in motion.
+                        // 이 motion에 해당 part ID curve가 없으면 원래 opacity를 유지합니다.
                         continue;
                     }
 
@@ -385,18 +335,7 @@ namespace Live2D.Cubism.Framework.MotionFade
             }
         }
 
-        /// <summary>
-        /// Evaluate fade curve.
-        /// </summary>
-        /// <param name="curve">Curves to be evaluated.</param>
-        /// <param name="elapsedTime">Elapsed Time.</param>
-        /// <param name="endTime">Fading end time.</param>
-        /// <param name="fadeInTime">Fade in time.</param>
-        /// <param name="fadeOutTime">Fade out time.</param>
-        /// <param name="parameterFadeInTime">Fade in time parameter.</param>
-        /// <param name="parameterFadeOutTime">Fade out time parameter.</param>
-        /// <param name="motionWeight">Motion weight.</param>
-        /// <param name="currentValue">Current value with weight applied.</param>
+        /// 입력: curve(AnimationCurve), elapsedTime(float), endTime(float), fadeInTime(float), fadeOutTime(float), parameterFadeInTime(float), parameterFadeOutTime(float), motionWeight(float), currentValue(float); 반환: float.
         public float Evaluate(
             AnimationCurve curve, float elapsedTime, float endTime,
             float fadeInTime, float fadeOutTime,
@@ -408,7 +347,7 @@ namespace Live2D.Cubism.Framework.MotionFade
                 return currentValue;
             }
 
-            // Motion fade.
+            // curve에서 읽은 값을 공통 motion fade 계산으로 혼합합니다.
             return Evaluate(
                 curve.Evaluate(elapsedTime), elapsedTime, endTime,
                 fadeInTime, fadeOutTime,
@@ -416,18 +355,7 @@ namespace Live2D.Cubism.Framework.MotionFade
                 motionWeight, currentValue);
         }
 
-        /// <summary>
-        /// Evaluate fade value.
-        /// </summary>
-        /// <param name="value">New value.</param>
-        /// <param name="elapsedTime">Elapsed Time.</param>
-        /// <param name="endTime">Fading end time.</param>
-        /// <param name="fadeInTime">Fade in time.</param>
-        /// <param name="fadeOutTime">Fade out time.</param>
-        /// <param name="parameterFadeInTime">Fade in time parameter.</param>
-        /// <param name="parameterFadeOutTime">Fade out time parameter.</param>
-        /// <param name="motionWeight">Motion weight.</param>
-        /// <param name="currentValue">Current value with weight applied.</param>
+        /// 입력: value(float), elapsedTime(float), endTime(float), fadeInTime(float), fadeOutTime(float), parameterFadeInTime(float), parameterFadeOutTime(float), motionWeight(float), currentValue(float); 반환: float.
         public float Evaluate(
             float value, float elapsedTime, float endTime,
             float fadeInTime, float fadeOutTime,
@@ -435,14 +363,14 @@ namespace Live2D.Cubism.Framework.MotionFade
             float motionWeight, float currentValue)
         {
 
-            // Motion fade.
+            // parameter별 시간이 없으면 motion 전체 weight만 현재 값에 적용합니다.
             if (parameterFadeInTime < 0.0f &&
                 parameterFadeOutTime < 0.0f)
             {
                 return currentValue + (value - currentValue) * motionWeight;
             }
 
-            // Parameter fade.
+            // parameter별 시간이 있으면 별도 fade-in/out easing을 계산합니다.
             float fadeInWeight, fadeOutWeight;
             if (parameterFadeInTime < 0.0f)
             {
@@ -475,18 +403,14 @@ namespace Live2D.Cubism.Framework.MotionFade
 
         #region Unity Events Handling
 
-        /// <summary>
-        /// Initializes instance.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void OnEnable()
         {
-            // Initialize cache.
+            // 활성화 시 Animator·모델·fade layer 참조를 새로 찾습니다.
             Refresh();
         }
 
-        /// <summary>
-        /// Called by Unity.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void LateUpdate()
         {
             if (!HasUpdateController)

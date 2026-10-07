@@ -4,6 +4,7 @@
  * Use of this source code is governed by the Live2D Open Software license
  * that can be found at https://www.live2d.com/eula/live2d-open-software-license-agreement_en.html.
  */
+// 한 physics rig 안에서 입력 parameter를 pendulum 파티클로 계산해 출력 parameter에 반영하는 하위 단위입니다.
 
 
 using Live2D.Cubism.Core;
@@ -13,57 +14,30 @@ using UnityEngine;
 
 namespace Live2D.Cubism.Framework.Physics
 {
-    /// <summary>
-    /// Children of rig.
-    /// </summary>
     [Serializable]
     public class CubismPhysicsSubRig
     {
-        /// <summary>
-        /// Name.
-        /// </summary>
         [SerializeField]
         public string Name;
 
-        /// <summary>
-        /// Input.
-        /// </summary>
         [SerializeField]
         public CubismPhysicsInput[] Input;
 
-        /// <summary>
-        /// Original Input.
-        /// </summary>
         [NonSerialized]
         public CubismPhysicsInput[] OriginalInput;
 
-        /// <summary>
-        /// Output.
-        /// </summary>
         [SerializeField]
         public CubismPhysicsOutput[] Output;
 
-        /// <summary>
-        /// Original Output.
-        /// </summary>
         [NonSerialized]
         public CubismPhysicsOutput[] OriginalOutput;
 
-        /// <summary>
-        /// Particles.
-        /// </summary>
         [SerializeField]
         public CubismPhysicsParticle[] Particles;
 
-        /// <summary>
-        /// Normalization.
-        /// </summary>
         [SerializeField]
         public CubismPhysicsNormalization Normalization;
 
-        /// <summary>
-        /// Rig.
-        /// </summary>
         public CubismPhysicsRig Rig
         {
             get { return _rig; }
@@ -74,27 +48,21 @@ namespace Live2D.Cubism.Framework.Physics
         private CubismPhysicsRig _rig;
 
 
-        /// <summary>
-        /// Output result of physics operations before applying to parameters.
-        /// </summary>
         private struct SubRigPhysicsOutput
         {
             public float[] Output;
         }
 
         [NonSerialized]
-        private SubRigPhysicsOutput _currentRigOutput; // Results of the latest pendulum calculation.
+        private SubRigPhysicsOutput _currentRigOutput;
 
         [NonSerialized]
-        private SubRigPhysicsOutput _previousRigOutput; // Result of previous pendulum calculation.
+        private SubRigPhysicsOutput _previousRigOutput;
 
-        /// <summary>
-        /// Applies the specified weights from the latest and one previous result of the pendulum operation.
-        /// </summary>
-        /// <param name="weight">Weight of latest results.</param>
+        /// 입력: weight(float); 반환: 없음.
         public void Interpolate(float weight)
         {
-            // Load input parameters.
+            // 현재 모델 파라미터를 읽어 물리 계산에 쓸 입력값으로 누적합니다.
             for (int i = 0; i < Output.Length; ++i)
             {
                 if (Output[i].Destination == null)
@@ -117,13 +85,7 @@ namespace Live2D.Cubism.Framework.Physics
             }
         }
 
-        /// <summary>
-        /// Updates parameter from output value.
-        /// </summary>
-        /// <param name="parameter">Target parameter.</param>
-        /// <param name="parameterValue">Target parameter Value.</param>
-        /// <param name="translation">Translation.</param>
-        /// <param name="output">Output value.</param>
+        /// 입력: parameter(CubismParameter), parameterValue(ref float), translation(float), output(CubismPhysicsOutput); 반환: 없음.
         private void UpdateOutputParameterValue(CubismParameter parameter, ref float parameterValue, float translation, CubismPhysicsOutput output)
         {
             var outputScale = 1.0f;
@@ -169,15 +131,7 @@ namespace Live2D.Cubism.Framework.Physics
         }
 
 
-        /// <summary>
-        /// Updates particles in every frame.
-        /// </summary>
-        /// <param name="strand">Particles.</param>
-        /// <param name="totalTranslation">Total translation.</param>
-        /// <param name="totalAngle">Total angle.</param>
-        /// <param name="wind">Direction of wind.</param>
-        /// <param name="thresholdValue">Value of threshold.</param>
-        /// <param name="deltaTime">Time of delta.</param>
+        /// 입력: strand(CubismPhysicsParticle[]), totalTranslation(Vector2), totalAngle(float), wind(Vector2), thresholdValue(float), deltaTime(float); 반환: 없음.
         private void UpdateParticles(
             CubismPhysicsParticle[] strand,
             Vector2 totalTranslation,
@@ -199,7 +153,7 @@ namespace Live2D.Cubism.Framework.Physics
 
                 strand[i].LastPosition = strand[i].Position;
 
-                // The Cubism Editor expects 30 FPS so we scale here by 30...
+                // Cubism Editor의 30 FPS 기준 계수를 실제 deltaTime에 맞춰 보정합니다.
                 var delay = strand[i].Delay * deltaTime * 30.0f;
 
                 var direction = strand[i].Position - strand[i - 1].Position;
@@ -245,14 +199,7 @@ namespace Live2D.Cubism.Framework.Physics
             }
         }
 
-        /// <summary>
-        /// Updates particles in stabilization function.
-        /// </summary>
-        /// <param name="strand">Particles</param>
-        /// <param name="totalTranslation">Total translation.</param>
-        /// <param name="totalAngle">Total angle.</param>
-        /// <param name="wind">Direction of wind.</param>
-        /// <param name="thresholdValue">Value of threshold.</param>
+        /// 입력: strand(CubismPhysicsParticle[]), totalTranslation(Vector2), totalAngle(float), wind(Vector2), thresholdValue(float); 반환: 없음.
         private void UpdateParticlesForStabilization(
             CubismPhysicsParticle[] strand,
             Vector2 totalTranslation,
@@ -289,21 +236,19 @@ namespace Live2D.Cubism.Framework.Physics
             }
         }
 
-        /// <summary>
-        /// Initializes <see langword="this"/>.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         public void Initialize()
         {
             var strand = Particles;
 
-            // Initialize the top of particle.
+            // 첫 입자는 전체 이동·회전을 적용한 strand의 고정 기준점으로 초기화합니다.
             strand[0].InitialPosition = Vector2.zero;
             strand[0].LastPosition = strand[0].InitialPosition;
             strand[0].LastGravity = Rig.Gravity;
             strand[0].LastGravity.y *= -1.0f;
 
 
-            // Initialize particles.
+            // 나머지 입자를 이전 입자 위치와 기본 위치 관계로 초기화합니다.
             for (var i = 1; i < strand.Length; ++i)
             {
                 var radius = Vector2.zero;
@@ -316,8 +261,7 @@ namespace Live2D.Cubism.Framework.Physics
             }
 
 
-            // Initialize inputs. Cached parameter indices are invalidated so they
-            // re-resolve lazily against the current parameters array.
+            // 입력 binding을 초기화하며, 캐시 인덱스는 현재 파라미터 배열에서 필요할 때 다시 찾게 합니다.
             OriginalInput = new CubismPhysicsInput[Input.Length];
             for (var i = 0; i < Input.Length; ++i)
             {
@@ -332,7 +276,7 @@ namespace Live2D.Cubism.Framework.Physics
             Array.Resize(ref _previousRigOutput.Output, Output.Length);
             Array.Resize(ref _currentRigOutput.Output, Output.Length);
 
-            // Initialize outputs. Destination indices re-resolve lazily like inputs.
+            // 출력 binding을 초기화하며, 대상 인덱스도 입력과 같이 필요할 때 다시 찾게 합니다.
             OriginalOutput = new CubismPhysicsOutput[Output.Length];
             for (var i = 0; i < Output.Length; ++i)
             {
@@ -343,10 +287,7 @@ namespace Live2D.Cubism.Framework.Physics
         }
 
 
-        /// <summary>
-        /// Evaluate rig in every frame.
-        /// </summary>
-        /// <param name="deltaTime"></param>
+        /// 입력: deltaTime(float); 반환: 없음.
         public void Evaluate(float deltaTime)
         {
             var totalAngle = 0.0f;
@@ -364,8 +305,7 @@ namespace Live2D.Cubism.Framework.Physics
                 }
                 else if (input.SourceIndex < 0)
                 {
-                    // Initialize() invalidates the cached index without touching the
-                    // resolved Source; re-resolve here or ParametersCache[-1] throws.
+                    // Initialize 뒤 캐시 인덱스는 무효이므로 Source가 있어도 다시 찾아야 -1 접근 예외를 피합니다.
                     input.SourceIndex = Array.IndexOf(Rig.Controller.Parameters, input.Source);
                 }
 
@@ -424,10 +364,7 @@ namespace Live2D.Cubism.Framework.Physics
                     continue;
                 }
 
-                // The parameters array keeps its identity for the lifetime of the
-                // controller, so the index only needs resolving when the destination
-                // was (re)bound; the previous per-frame IndexOf was an O(outputs x
-                // parameters) linear scan every evaluation.
+                // controller 수명 동안 파라미터 배열은 같으므로 대상 binding이 바뀔 때만 인덱스를 찾고, 매 평가 선형 탐색을 피합니다.
                 if (output.DestinationIndex < 0)
                 {
                     output.DestinationIndex = Array.IndexOf(Rig.Controller.Parameters, output.Destination);
@@ -455,9 +392,7 @@ namespace Live2D.Cubism.Framework.Physics
             }
         }
 
-        /// <summary>
-        /// Calculate the state in which the physics operation stabilizes at the current parameter values.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         public void Stabilization()
         {
             var totalAngle = 0.0f;

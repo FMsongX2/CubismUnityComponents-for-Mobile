@@ -4,6 +4,7 @@
  * Use of this source code is governed by the Live2D Open Software license
  * that can be found at https://www.live2d.com/eula/live2d-open-software-license-agreement_en.html.
  */
+// Cubism offscreen 합성용 RenderTexture를 공용 pool로 만들고 대여·크기 동기화·해제를 관리합니다.
 
 
 using System;
@@ -13,36 +14,25 @@ using UnityEngine.Rendering;
 
 namespace Live2D.Cubism.Rendering
 {
-    /// <summary>
-    /// Class for managing offscreen render textures.
-    /// </summary>
     public class CubismOffscreenRenderTextureManager
     {
-        /// <summary>
-        /// Tag of the GameObject that holds <see cref="CubismCommonRenderTextureController"/> script.
-        /// </summary>
         private static readonly string RenderTextureControllerName = "CubismRenderTextureController";
 
-        /// <summary>
-        /// Default number of offscreen render textures.
-        /// </summary>
         private static readonly int OffscreenRenderTextureDefaultCount = 0;
 
-        /// <summary>
-        /// instance of the <see cref="CubismOffscreenRenderTextureManager"/>.
-        /// </summary>
         private static CubismOffscreenRenderTextureManager Instance;
 
+        /// 입력: 없음; 반환: CubismOffscreenRenderTextureManager.
         public static CubismOffscreenRenderTextureManager GetInstance()
         {
             if (Instance == null)
             {
-                // Initialize the singleton instance.
+                // 처음 요청한 호출자가 이후 모든 모델이 공유할 manager를 만듭니다.
                 Instance = new CubismOffscreenRenderTextureManager();
 
                 if (Application.isPlaying)
                 {
-                    // Check if the CubismRenderTextureController is already instantiated.
+                    // 이미 scene 전환 수명을 관리하는 공용 controller가 있는지 확인합니다.
                     Instance._isRenderTextureControllerInstantiated = GameObject.Find(RenderTextureControllerName) != null;
                 }
             }
@@ -50,43 +40,20 @@ namespace Live2D.Cubism.Rendering
             return Instance;
         }
 
-        /// <summary>
-        /// Container for render texture and its usage status.
-        /// </summary>
         private struct RenderTextureContainer
         {
-            /// <summary>
-            /// Render texture.
-            /// </summary>
             public RenderTexture RenderTexture;
 
-            /// <summary>
-            /// Is in use.
-            /// </summary>
             public bool InUse;
         }
 
-        /// <summary>
-        /// Render texture containers.
-        /// </summary>
         private RenderTextureContainer[] _offscreenRenderTextureContainers;
 
-        /// <summary>
-        /// Current active render texture count.
-        /// </summary>
         private int _currentActiveRenderTextureCount;
 
-        /// <summary>
-        /// CubismRenderTextureController already instantiated?
-        /// </summary>
         private bool _isRenderTextureControllerInstantiated;
 
-        /// <summary>
-        /// Check if the render texture needs to be resized or recreated to match the base texture.
-        /// </summary>
-        /// <param name="renderTexture">The render texture to check.</param>
-        /// <param name="baseTexture">Base render texture to compare against.</param>
-        /// <returns>True if the render texture needs to be resized or recreated.</returns>
+        /// 입력: renderTexture(RenderTexture), baseTexture(RenderTexture); 반환: bool.
         private static bool NeedsResizeOrRecreate(RenderTexture renderTexture, RenderTexture baseTexture)
         {
             return !renderTexture.IsCreated()
@@ -98,12 +65,7 @@ namespace Live2D.Cubism.Rendering
                 || renderTexture.filterMode != FilterMode.Point;
         }
 
-        /// <summary>
-        /// Create a new render texture for the offscreen render.
-        /// </summary>
-        /// <param name="name">Name of the render texture.</param>
-        /// <param name="baseTexture">Base render texture to use for creating a new render texture.</param>
-        /// <returns>The new render texture.</returns>
+        /// 입력: name(string), baseTexture(RenderTexture); 반환: RenderTexture.
         private RenderTexture CreateOffscreenRenderTexture(string name, RenderTexture baseTexture)
         {
             var renderTexture = new RenderTexture(baseTexture)
@@ -117,10 +79,7 @@ namespace Live2D.Cubism.Rendering
             return renderTexture;
         }
 
-        /// <summary>
-        /// Initialize the offscreen render texture manager.
-        /// </summary>
-        /// <param name="baseTexture">Base render texture to use for initialization.</param>
+        /// 입력: baseTexture(RenderTexture); 반환: 없음.
         private void Initialize(RenderTexture baseTexture)
         {
             if (Application.isPlaying && !_isRenderTextureControllerInstantiated)
@@ -130,7 +89,7 @@ namespace Live2D.Cubism.Rendering
                 var failedLog = string.Empty;
                 if (prefab)
                 {
-                    // Instantiate the controller GameObject from the prefab.
+                    // Resources prefab에서 공용 controller를 만들어 scene 전환 뒤에도 유지합니다.
                     var instance = GameObject.Instantiate(prefab);
                     if (instance)
                     {
@@ -141,7 +100,7 @@ namespace Live2D.Cubism.Rendering
                     }
                     else
                     {
-                        // Failed to instantiate prefab.
+                        // prefab은 찾았지만 instance 생성에 실패한 원인을 로그로 남깁니다.
                         failedLog =
                             $"{nameof(CubismOffscreenRenderTextureManager)}: Failed to instantiate prefab.";
                     }
@@ -158,7 +117,7 @@ namespace Live2D.Cubism.Rendering
                 }
             }
 
-            // Release existing render textures.
+            // 기준 texture가 바뀌었으므로 기존 pool의 GPU texture를 먼저 해제합니다.
             if (_offscreenRenderTextureContainers != null)
             {
                 for (var i = 0; i < _offscreenRenderTextureContainers.Length; ++i)
@@ -167,7 +126,7 @@ namespace Live2D.Cubism.Rendering
                 }
             }
 
-            // Create default number of render textures.
+            // 새 기준 설정으로 기본 개수만큼 미사용 pool 항목을 만듭니다.
             _offscreenRenderTextureContainers = new RenderTextureContainer[OffscreenRenderTextureDefaultCount];
             for (var i = 0; i < OffscreenRenderTextureDefaultCount; ++i)
             {
@@ -181,10 +140,7 @@ namespace Live2D.Cubism.Rendering
             _currentActiveRenderTextureCount = 0;
         }
 
-        /// <summary>
-        /// Clear all offscreen render textures.
-        /// </summary>
-        /// <param name="commandBuffer">Command buffer.</param>
+        /// 입력: commandBuffer(CommandBuffer); 반환: 없음.
         public void ClearRenderTextures(CommandBuffer commandBuffer)
         {
             for (var i = 0; i < _offscreenRenderTextureContainers?.Length; i++)
@@ -199,14 +155,10 @@ namespace Live2D.Cubism.Rendering
             }
         }
 
-        /// <summary>
-        /// Get an offscreen render texture.
-        /// </summary>
-        /// <param name="baseTexture">Base render texture to use for getting or creating an offscreen render texture.</param>
-        /// <returns>An offscreen render texture.</returns>
+        /// 입력: baseTexture(RenderTexture); 반환: RenderTexture.
         public RenderTexture GetOffscreenRenderTexture(RenderTexture baseTexture)
         {
-            // Initialize if not yet.
+            // 아직 pool이 없으면 이 기준 texture로 공용 수명을 초기화합니다.
             if (_offscreenRenderTextureContainers == null)
             {
                 Initialize(baseTexture);
@@ -214,7 +166,7 @@ namespace Live2D.Cubism.Rendering
 
             _currentActiveRenderTextureCount++;
 
-            // Search for an unused render texture.
+            // 이미 만든 항목 중 현재 다른 controller가 쓰지 않는 texture를 찾습니다.
             for (var i = 0; i < _offscreenRenderTextureContainers?.Length; ++i)
             {
                 if (_offscreenRenderTextureContainers[i].InUse
@@ -223,7 +175,7 @@ namespace Live2D.Cubism.Rendering
                     continue;
                 }
 
-                // Resize if the size is different.
+                // 기준 texture와 생성·크기·format·sampling이 다르면 같은 항목을 다시 만듭니다.
                 if (NeedsResizeOrRecreate(_offscreenRenderTextureContainers[i].RenderTexture, baseTexture))
                 {
                     _offscreenRenderTextureContainers[i].RenderTexture.Release();
@@ -237,30 +189,26 @@ namespace Live2D.Cubism.Rendering
                 }
                 _offscreenRenderTextureContainers[i].InUse = true;
 
-                // Return the found render texture.
+                // 찾은 항목을 사용 중으로 표시했으므로 호출자에게 넘깁니다.
                 return _offscreenRenderTextureContainers[i].RenderTexture;
             }
 
-            // If no unused render texture is found, create a new one.
+            // 남은 항목이 없으면 pool을 한 칸 늘려 새 texture를 대여합니다.
             return CreateContainer(baseTexture).RenderTexture;
         }
 
-        /// <summary>
-        /// Create a new render texture container.
-        /// </summary>
-        /// <param name="baseTexture">Base render texture to use for creating a new container.</param>
-        /// <returns>The new render texture container.</returns>
+        /// 입력: baseTexture(RenderTexture); 반환: RenderTextureContainer.
         private RenderTextureContainer CreateContainer(RenderTexture baseTexture)
         {
             if (_offscreenRenderTextureContainers == null)
             {
                 Initialize(baseTexture);
 
-                // If still null.
+                // controller 생성 실패 등으로 초기화 뒤에도 pool이 비어 있는지 다시 확인합니다.
                 if (_offscreenRenderTextureContainers == null
                     || _offscreenRenderTextureContainers.Length < 1)
                 {
-                    // Create the first container.
+                    // 첫 요청을 처리할 texture 항목 하나를 직접 만듭니다.
                     _offscreenRenderTextureContainers = new RenderTextureContainer[1];
                     _offscreenRenderTextureContainers[0] = new RenderTextureContainer
                     {
@@ -271,7 +219,7 @@ namespace Live2D.Cubism.Rendering
 
                 _offscreenRenderTextureContainers[0].InUse = true;
 
-                // Return the first container.
+                // 첫 항목을 사용 중으로 표시한 상태 그대로 반환합니다.
                 return _offscreenRenderTextureContainers[0];
             }
 
@@ -285,21 +233,17 @@ namespace Live2D.Cubism.Rendering
             return _offscreenRenderTextureContainers[^1];
         }
 
-        /// <summary>
-        /// End use the specified render texture.
-        /// </summary>
-        /// <param name="renderController">CubismRenderController.</param>
-        /// <param name="renderTexture">Use RenderTexture.</param>
+        /// 입력: renderController(CubismRenderController), renderTexture(RenderTexture); 반환: 없음.
         public void StopUsingRenderTexture(CubismRenderController renderController, RenderTexture renderTexture)
         {
-            // If not initialized, do nothing.
+            // 아직 대여한 pool 자체가 없으면 바꿀 상태가 없습니다.
             if (_offscreenRenderTextureContainers == null
                 || !renderController)
             {
                 return;
             }
 
-            // Search for the specified render texture.
+            // 받은 texture와 같은 pool 항목만 찾아 대여 상태를 해제합니다.
             for (var i = 0; i < _offscreenRenderTextureContainers.Length; ++i)
             {
                 if (_offscreenRenderTextureContainers[i].RenderTexture != renderTexture
@@ -308,7 +252,7 @@ namespace Live2D.Cubism.Rendering
                     continue;
                 }
 
-                // Mark as not in use.
+                // 다음 controller가 재사용할 수 있도록 미사용 상태로 되돌립니다.
                 _offscreenRenderTextureContainers[i].InUse = false;
 
                 _currentActiveRenderTextureCount--;
@@ -316,18 +260,16 @@ namespace Live2D.Cubism.Rendering
             }
         }
 
-        /// <summary>
-        /// Release all offscreen render textures.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         public void Release()
         {
-            // If not initialized, do nothing.
+            // 아직 만든 pool이 없으면 해제할 GPU 자원도 없습니다.
             if (_offscreenRenderTextureContainers == null)
             {
                 return;
             }
 
-            // Release all render textures.
+            // 모든 항목의 GPU texture와 대여 표시를 함께 지웁니다.
             for (var i = 0; i < _offscreenRenderTextureContainers.Length; ++i)
             {
                 if (_offscreenRenderTextureContainers[i].RenderTexture != null)

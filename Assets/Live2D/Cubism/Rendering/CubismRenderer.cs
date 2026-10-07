@@ -4,6 +4,7 @@
  * Use of this source code is governed by the Live2D Open Software license
  * that can be found at https://www.live2d.com/eula/live2d-open-software-license-agreement_en.html.
  */
+// 한 Cubism draw object의 mesh·재질·정렬 상태를 Unity 렌더러에 반영하는 어댑터입니다.
 
 
 using Live2D.Cubism.Core;
@@ -17,21 +18,12 @@ using UnityEngine.Serialization;
 
 namespace Live2D.Cubism.Rendering
 {
-    /// <summary>
-    /// Wrapper for drawing <see cref="CubismDrawable"/>s.
-    /// </summary>
     [ExecuteInEditMode, RequireComponent(typeof(MeshRenderer))]
     public sealed partial class CubismRenderer : MonoBehaviour
     {
-        /// <summary>
-        /// <see cref="LocalSortingOrder"/> backing field.
-        /// </summary>
         [SerializeField, HideInInspector]
         private int _localSortingOrder;
 
-        /// <summary>
-        /// Local sorting order.
-        /// </summary>
         public int LocalSortingOrder
         {
             get
@@ -40,106 +32,76 @@ namespace Live2D.Cubism.Rendering
             }
             set
             {
-                // Return early if same value given.
+                // 값이 같으면 정렬 재계산과 MeshRenderer 쓰기를 생략합니다.
                 if (value == _localSortingOrder)
                 {
                     return;
                 }
 
 
-                // Store value.
+                // 새 로컬 정렬 오프셋을 보관합니다.
                 _localSortingOrder = value;
 
 
-                // Apply it.
+                // 보관한 값으로 Unity 정렬 상태를 갱신합니다.
                 ApplySorting();
             }
         }
 
 
-        /// <summary>
-        /// <see cref="Color"/> backing field.
-        /// </summary>
         [SerializeField, HideInInspector]
         private Color _color = Color.white;
 
-        /// <summary>
-        /// Color.
-        /// </summary>
         public Color Color
         {
             get { return _color; }
             set
             {
-                // Return early if same value given.
+                // 값이 같으면 정점 색상 갱신을 생략합니다.
                 if (value == _color)
                 {
                     return;
                 }
 
 
-                // Store value.
+                // 새 기본 tint를 보관합니다.
                 _color = value;
 
-                // Apply color.
+                // 다음 mesh swap에 쓸 정점 색상을 다시 계산합니다.
                 ApplyVertexColors();
             }
         }
 
-        /// <summary>
-        /// <see cref="DrawObjectMultiplyColorEnabled"/> backing field.
-        /// </summary>
         [FormerlySerializedAs("_isOverriddenDrawableMultiplyColors")] [SerializeField, HideInInspector]
         private bool isOverriddenDrawObjectMultiplyColors;
 
-        /// <summary>
-        /// Whether to override with multiply color from the model.
-        /// </summary>
         public bool DrawObjectMultiplyColorEnabled
         {
             get { return isOverriddenDrawObjectMultiplyColors; }
             set { isOverriddenDrawObjectMultiplyColors = value; }
         }
 
-        /// <summary>
-        /// Last <see cref="DrawObjectMultiplyColorEnabled"/>.
-        /// </summary>
         public bool LastIsUseUserMultiplyColor { get; set; }
 
-        /// <summary>
-        /// <see cref="DrawObjectScreenColorEnabled"/> backing field.
-        /// </summary>
         [FormerlySerializedAs("_isOverriddenDrawableScreenColors")] [SerializeField, HideInInspector]
         private bool _isOverriddenDrawObjectScreenColors;
 
-        /// <summary>
-        /// Whether to override with screen color from the model.
-        /// </summary>
         public bool DrawObjectScreenColorEnabled
         {
             get { return _isOverriddenDrawObjectScreenColors; }
             set { _isOverriddenDrawObjectScreenColors = value; }
         }
 
-        /// <summary>
-        /// Last <see cref="DrawObjectScreenColorEnabled"/>.
-        /// </summary>
         public bool LastIsUseUserScreenColors { get; set; }
 
-        /// <summary>
-        /// <see cref="MultiplyColor"/> backing field.
-        /// </summary>
         [SerializeField, HideInInspector]
         private Color _multiplyColor = Color.white;
 
-        /// <summary>
-        /// Drawable Multiply Color.
-        /// </summary>
         public Color MultiplyColor
         {
             get
             {
-                // If it can overwrite multiply color, return it.
+                // 사용자 override가 켜졌으면 native 값 대신 직렬화 색상을 반환합니다.
                 if (RenderController.MultiplyColorEnabled
                     || DrawObjectMultiplyColorEnabled)
                 {
@@ -153,40 +115,31 @@ namespace Live2D.Cubism.Rendering
                     case CubismModelTypes.DrawObjectType.Offscreen:
                         return Offscreen.MultiplyColor;
                     default:
-                        // If we are not a drawable or offscreen, return the default value.
+                        // 지원하지 않는 draw object이면 기본 흰색을 반환합니다.
                         return _multiplyColor;
                 }
             }
             set
             {
-                // Return early if same value given.
+                // 색이 같으면 shader 상태 갱신을 생략합니다.
                 if (value == _multiplyColor)
                 {
                     return;
                 }
 
 
-                // Store value.
+                // 새 사용자 Multiply 색을 보관합니다.
                 _multiplyColor = (value != null)
                     ? value
                     : Color.white;
             }
         }
 
-        /// <summary>
-        /// Last Drawable Multiply Color.
-        /// </summary>
         public Color LastMultiplyColor { get; set; }
 
-        /// <summary>
-        /// <see cref="ScreenColor"/> backing field.
-        /// </summary>
         [SerializeField, HideInInspector]
         private Color _screenColor = Color.clear;
 
-        /// <summary>
-        /// Drawable Screen Color.
-        /// </summary>
         public Color ScreenColor
         {
             get
@@ -204,35 +157,29 @@ namespace Live2D.Cubism.Rendering
                     case CubismModelTypes.DrawObjectType.Offscreen:
                         return Offscreen.ScreenColor;
                     default:
-                        // If we are not a drawable or offscreen, return the default value.
+                        // 지원하지 않는 draw object이면 기본 흰색을 반환합니다.
                         return _screenColor;
                 }
             }
             set
             {
-                // Return early if same value given.
+                // 색이 같으면 shader 상태 갱신을 생략합니다.
                 if (value == _screenColor)
                 {
                     return;
                 }
 
 
-                // Store value.
+                // 새 사용자 Screen 색을 보관합니다.
                 _screenColor = (value != null)
                     ? value
                     : Color.black;
             }
         }
 
-        /// <summary>
-        /// Last Drawable Screen Color.
-        /// </summary>
         public Color LastScreenColor { get; set; }
 
 
-        /// <summary>
-        /// <see cref="UnityEngine.Material"/>.
-        /// </summary>
         public Material Material
         {
             get
@@ -273,15 +220,9 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// <see cref="MainTexture"/> backing field.
-        /// </summary>
         [SerializeField, HideInInspector]
         private Texture2D _mainTexture;
 
-        /// <summary>
-        /// <see cref="MeshRenderer"/>'s main texture.
-        /// </summary>
         public Texture2D MainTexture
         {
             get
@@ -296,7 +237,7 @@ namespace Live2D.Cubism.Rendering
             }
             set
             {
-                // Return early if same value given and main texture is valid.
+                // 같은 유효 texture면 property block 갱신을 생략합니다.
                 if (value == _mainTexture && _mainTexture != null)
                 {
                     return;
@@ -309,41 +250,25 @@ namespace Live2D.Cubism.Rendering
                 }
                 else
                 {
-                    // Store value.
+                    // 선택한 texture를 직렬화 슬롯에 보관합니다.
                     _mainTexture = (value != null)
                         ? value
                         : Texture2D.whiteTexture;
                 }
 
 
-                // Apply it.
+                // 새 texture를 현재 렌더 경로에 반영합니다.
                 ApplyMainTexture();
             }
         }
 
 
-        /// <summary>
-        /// Meshes.
-        /// </summary>
-        /// <remarks>
-        /// Double buffering dynamic meshes increases performance on mobile, so we double-buffer them here.
-        /// </remarks>
-
         private Mesh[] Meshes { get; set; }
 
-        /// <summary>
-        /// Index of front buffer mesh.
-        /// </summary>
         private int FrontMesh { get; set; }
 
-        /// <summary>
-        /// Index of back buffer mesh.
-        /// </summary>
         private int BackMesh { get; set; }
 
-        /// <summary>
-        /// <see cref="UnityEngine.Mesh"/>.
-        /// </summary>
         public Mesh Mesh
         {
             get
@@ -357,15 +282,9 @@ namespace Live2D.Cubism.Rendering
             }
         }
 
-        /// <summary>
-        /// <see cref="MeshRenderer"/> backing field.
-        /// </summary>
         [NonSerialized]
         private MeshRenderer _meshRenderer;
 
-        /// <summary>
-        /// <see cref="UnityEngine.MeshRenderer"/>.
-        /// </summary>
         public MeshRenderer MeshRenderer
         {
             get
@@ -376,15 +295,9 @@ namespace Live2D.Cubism.Rendering
             }
         }
 
-        /// <summary>
-        /// <see cref="MeshFilter"/>'s backing field.
-        /// </summary>
         [NonSerialized]
         private MeshFilter _meshFilter;
 
-        /// <summary>
-        /// <see cref="UnityEngine.MeshFilter"/> for Scene View picking support.
-        /// </summary>
         public MeshFilter MeshFilter
         {
             get
@@ -404,20 +317,14 @@ namespace Live2D.Cubism.Rendering
             }
         }
 
-        /// <summary>
-        /// <see cref="DrawMaterial"/>'s backing field.
-        /// </summary>
         [SerializeField, HideInInspector]
         private Material _drawMaterial;
 
-        /// <summary>
-        /// Material used for CommandBuffer rendering (the actual rendering material).
-        /// </summary>
         public Material DrawMaterial
         {
             get
             {
-                // Only return _drawMaterial for Drawable type (picking is only for Drawable).
+                // picking은 Drawable만 하므로 그 경우에만 실제 draw 재질을 반환합니다.
                 if (DrawObjectType != CubismModelTypes.DrawObjectType.Drawable)
                 {
                     return null;
@@ -428,28 +335,16 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// <see cref="CubismDrawable"/>.
-        /// </summary>
         public CubismDrawable Drawable { get; set; }
 
-        /// <summary>
-        /// <see cref="CubismRenderController"/>.
-        /// </summary>
         internal CubismRenderController RenderController { get; set; }
 
 
         #region Interface For CubismRenderController
 
-        /// <summary>
-        /// <see cref="SortingMode"/> backing field.
-        /// </summary>
         [SerializeField, HideInInspector]
         private CubismSortingMode _sortingMode;
 
-        /// <summary>
-        /// Sorting mode.
-        /// </summary>
         internal CubismSortingMode SortingMode
         {
             get
@@ -460,15 +355,9 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// <see cref="SortingOrder"/> backing field.
-        /// </summary>
         [SerializeField, HideInInspector]
         private int _sortingOrder;
 
-        /// <summary>
-        /// Sorting mode.
-        /// </summary>
         private int SortingOrder
         {
             get { return _sortingOrder; }
@@ -476,15 +365,9 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// <see cref="RenderOrder"/> backing field.
-        /// </summary>
         [SerializeField, HideInInspector]
         private int _renderOrder;
 
-        /// <summary>
-        /// Sorting mode.
-        /// </summary>
         private int RenderOrder
         {
             get { return _renderOrder; }
@@ -492,15 +375,9 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// <see cref="DepthOffset"/> backing field.
-        /// </summary>
         [SerializeField, HideInInspector]
         private float _depthOffset = 0.00001f;
 
-        /// <summary>
-        /// Offset to apply in case of depth sorting.
-        /// </summary>
         private float DepthOffset
         {
             get { return _depthOffset; }
@@ -508,15 +385,9 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// <see cref="Opacity"/> backing field.
-        /// </summary>
         [SerializeField, HideInInspector]
         private float _opacity;
 
-        /// <summary>
-        /// Opacity.
-        /// </summary>
         internal float Opacity
         {
             get { return _opacity; }
@@ -524,46 +395,32 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Buffer for vertex colors.
-        /// </summary>
         private Color[] VertexColors { get; set; }
 
 
-        /// <summary>
-        /// Allows tracking of what vertex data was updated last swap.
-        /// </summary>
         private SwapInfo LastSwap { get; set; }
 
-        /// <summary>
-        /// Allows tracking of what vertex data will be swapped.
-        /// </summary>
         private SwapInfo ThisSwap { get; set; }
 
 
-        /// <summary>
-        /// Swaps mesh buffers.
-        /// </summary>
-        /// <remarks>
-        /// Make sure to manually call this method in case you changed the <see cref="Color"/>.
-        /// </remarks>
+        /// 입력: 없음; 반환: 없음.
         public void SwapMeshes()
         {
-            // The batched fast path owns all mesh data; nothing to swap.
+            // 배치 경로는 공유 mesh를 직접 소유하므로 per-Drawable front/back swap이 필요 없습니다.
             if (Meshes == null || Meshes.Length < 2)
             {
                 return;
             }
 
-            // Perform internal swap.
+            // 앞·뒤 mesh 버퍼와 해당 변경 플래그를 교환합니다.
             BackMesh = FrontMesh;
             FrontMesh = (FrontMesh == 0) ? 1 : 0;
 
-            // Update colors.
+            // 다음 렌더링에 노출할 mesh의 정점 색상을 갱신합니다.
             Meshes[BackMesh].colors = VertexColors;
 
 
-            // Update swap info.
+            // 이번 프레임 변경 플래그를 직전 swap 상태로 넘깁니다.
             LastSwap = ThisSwap;
 
 
@@ -574,9 +431,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Updates visibility.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         public void UpdateVisibility()
         {
             if (LastSwap.DidBecomeVisible)
@@ -593,9 +448,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Updates render order.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         public void UpdateRenderOrder()
         {
             if (LastSwap.NewRenderOrder)
@@ -607,19 +460,13 @@ namespace Live2D.Cubism.Rendering
             ResetRenderOrderFlag();
         }
 
-        /// <summary>
-        /// Updates sorting layer.
-        /// </summary>
-        /// <param name="newSortingLayer">New sorting layer.</param>
+        /// 입력: newSortingLayer(int); 반환: 없음.
         internal void OnControllerSortingLayerDidChange(int newSortingLayer)
         {
             MeshRenderer.sortingLayerID = newSortingLayer;
         }
 
-        /// <summary>
-        /// Updates sorting mode.
-        /// </summary>
-        /// <param name="newSortingMode">New sorting mode.</param>
+        /// 입력: newSortingMode(CubismSortingMode); 반환: 없음.
         internal void OnControllerSortingModeDidChange(CubismSortingMode newSortingMode)
         {
             SortingMode = newSortingMode;
@@ -628,10 +475,7 @@ namespace Live2D.Cubism.Rendering
             ApplySorting();
         }
 
-        /// <summary>
-        /// Updates sorting order.
-        /// </summary>
-        /// <param name="newSortingOrder">New sorting order.</param>
+        /// 입력: newSortingOrder(int); 반환: 없음.
         internal void OnControllerSortingOrderDidChange(int newSortingOrder)
         {
             SortingOrder = newSortingOrder;
@@ -640,10 +484,7 @@ namespace Live2D.Cubism.Rendering
             ApplySorting();
         }
 
-        /// <summary>
-        /// Updates depth offset.
-        /// </summary>
-        /// <param name="newDepthOffset">New depth offset value.</param>
+        /// 입력: newDepthOffset(float); 반환: 없음.
         internal void OnControllerDepthOffsetDidChange(float newDepthOffset)
         {
             DepthOffset = newDepthOffset;
@@ -653,10 +494,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Sets the opacity.
-        /// </summary>
-        /// <param name="newOpacity">New opacity.</param>
+        /// 입력: newOpacity(float); 반환: 없음.
         internal void OnDrawableOpacityDidChange(float newOpacity)
         {
             Opacity = newOpacity;
@@ -665,10 +503,7 @@ namespace Live2D.Cubism.Rendering
             ApplyVertexColors();
         }
 
-        /// <summary>
-        /// Updates render order.
-        /// </summary>
-        /// <param name="newRenderOrder">New render order.</param>
+        /// 입력: newRenderOrder(int); 반환: 없음.
         internal void OnDrawableRenderOrderDidChange(int newRenderOrder)
         {
             if (RenderOrder == newRenderOrder) return;
@@ -680,33 +515,27 @@ namespace Live2D.Cubism.Rendering
             SetNewRenderOrder();
         }
 
-        /// <summary>
-        /// Sets the <see cref="UnityEngine.Mesh.vertices"/>.
-        /// </summary>
-        /// <param name="newVertexPositions">Vertex positions to set.</param>
+        /// 입력: newVertexPositions(Vector3[]); 반환: 없음.
         internal void OnDrawableVertexPositionsDidChange(Vector3[] newVertexPositions)
         {
             var mesh = Mesh;
 
 
-            // Apply positions and update bounds.
+            // 새 정점 위치를 기록하고 picking·culling용 bounds를 다시 계산합니다.
             mesh.vertices = newVertexPositions;
 
 
             mesh.RecalculateBounds();
 
 
-            // Set swap flag.
+            // 다음 swap에서 정점 위치 업로드가 일어나도록 표시합니다.
             SetNewVertexPositions();
         }
 
-        /// <summary>
-        /// Sets visibility.
-        /// </summary>
-        /// <param name="newVisibility">New visibility.</param>
+        /// 입력: newVisibility(bool); 반환: 없음.
         internal void OnDrawableVisiblityDidChange(bool newVisibility)
         {
-            // Set swap flag if visible.
+            // 다음 swap에서 가시 상태 전환이 반영되도록 표시합니다.
             if (newVisibility)
             {
                 BecomeVisible();
@@ -718,13 +547,10 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Sets model opacity.
-        /// </summary>
-        /// <param name="newModelOpacity">Opacity to set.</param>
+        /// 입력: newModelOpacity(float); 반환: 없음.
         internal void OnModelOpacityDidChange(float newModelOpacity)
         {
-            // The batched fast path reads the controller opacity when recording draws.
+            // 배치 경로는 draw 기록 시 controller 불투명도를 직접 읽으므로 여기서 property block을 쓰지 않습니다.
             if (IsBatchedRenderingTarget())
             {
                 return;
@@ -734,7 +560,7 @@ namespace Live2D.Cubism.Rendering
             _meshRenderer.GetPropertyBlock(property);
 
 
-            // Write property.
+            // legacy 경로의 shader property block에 모델 불투명도를 기록합니다.
             property.SetFloat(CubismShaderVariables.ModelOpacity, newModelOpacity);
 
             MeshRenderer.SetPropertyBlock(property);
@@ -742,9 +568,7 @@ namespace Live2D.Cubism.Rendering
 
         #endregion
 
-        /// <summary>
-        /// True when this renderer's drawing is owned by the batched fast path.
-        /// </summary>
+        /// 입력: 없음; 반환: bool.
         private bool IsBatchedRenderingTarget()
         {
             return RenderController != null
@@ -752,9 +576,7 @@ namespace Live2D.Cubism.Rendering
                 && DrawObjectType == CubismModelTypes.DrawObjectType.Drawable;
         }
 
-        /// <summary>
-        /// Routes color changes into the batched renderer when it owns this drawable.
-        /// </summary>
+        /// 입력: 없음; 반환: bool.
         private bool TryMarkBatchedColorDirty()
         {
             if (!IsBatchedRenderingTarget())
@@ -767,9 +589,7 @@ namespace Live2D.Cubism.Rendering
             return true;
         }
 
-        /// <summary>
-        /// Applies main texture for rendering.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void ApplyMainTexture()
         {
             if (IsBatchedRenderingTarget())
@@ -787,21 +607,16 @@ namespace Live2D.Cubism.Rendering
             MeshRenderer.SetPropertyBlock(property);
         }
 
-        /// <summary>
-        /// Writes the main texture into an already-fetched property block.
-        /// Lets the draw path batch all writes into a single Get/SetPropertyBlock round-trip.
-        /// </summary>
+        /// 입력: property(MaterialPropertyBlock); 반환: 없음.
         private void WriteMainTexture(MaterialPropertyBlock property)
         {
             property.SetTexture(CubismShaderVariables.MainTexture, MainTexture);
         }
 
-        /// <summary>
-        /// Applies sorting.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void ApplySorting()
         {
-            // Return early if no controller or model.
+            // controller 또는 모델이 없으면 정렬에 필요한 상태가 없으므로 종료합니다.
             if (!RenderController
                 || !RenderController.Model)
             {
@@ -810,7 +625,7 @@ namespace Live2D.Cubism.Rendering
 
             RenderController.DidChangeSorting = true;
 
-            // Sort by order.
+            // order 모드에서는 controller 기준 순서와 drawable 순서를 합쳐 적용합니다.
             if (SortingMode.SortByOrder())
             {
                 MeshRenderer.sortingOrder = SortingOrder + ((SortingMode == CubismSortingMode.BackToFrontOrder)
@@ -825,7 +640,7 @@ namespace Live2D.Cubism.Rendering
             }
 
 
-            // Sort by depth.
+            // depth 모드에서는 render order를 local Z 간격으로 변환합니다.
             var offset = (SortingMode == CubismSortingMode.BackToFrontZ)
                     ? -DepthOffset
                     : DepthOffset;
@@ -836,9 +651,7 @@ namespace Live2D.Cubism.Rendering
             transform.localPosition = new Vector3(0f, 0f, RenderOrder * offset);
         }
 
-        /// <summary>
-        /// Uploads mesh vertex colors.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         public void ApplyVertexColors()
         {
             if (TryMarkBatchedColorDirty())
@@ -865,13 +678,11 @@ namespace Live2D.Cubism.Rendering
             }
 
 
-            // Set swap flag.
+            // 다음 swap에서 새 정점 색상이 업로드되도록 표시합니다.
             SetNewVertexColors();
         }
 
-        /// <summary>
-        /// Uploads diffuse colors.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         public void ApplyMultiplyColor()
         {
             if (DrawObjectType != CubismModelTypes.DrawObjectType.Drawable)
@@ -892,18 +703,13 @@ namespace Live2D.Cubism.Rendering
             MeshRenderer.SetPropertyBlock(property);
         }
 
-        /// <summary>
-        /// Writes the multiply color into an already-fetched property block.
-        /// Caller must ensure this is a drawable draw object.
-        /// </summary>
+        /// 입력: property(MaterialPropertyBlock); 반환: 없음.
         private void WriteMultiplyColor(MaterialPropertyBlock property)
         {
             property.SetColor(CubismShaderVariables.MultiplyColor, MultiplyColor);
         }
 
-        /// <summary>
-        /// Initializes the main texture if possible.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void TryInitializeMultiplyColor()
         {
             LastIsUseUserMultiplyColor = false;
@@ -918,9 +724,7 @@ namespace Live2D.Cubism.Rendering
             ApplyMultiplyColor();
         }
 
-        /// <summary>
-        /// Uploads tint colors.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         public void ApplyScreenColor()
         {
             if (DrawObjectType != CubismModelTypes.DrawObjectType.Drawable)
@@ -941,18 +745,13 @@ namespace Live2D.Cubism.Rendering
             MeshRenderer.SetPropertyBlock(property);
         }
 
-        /// <summary>
-        /// Writes the screen color into an already-fetched property block.
-        /// Caller must ensure this is a drawable draw object.
-        /// </summary>
+        /// 입력: property(MaterialPropertyBlock); 반환: 없음.
         private void WriteScreenColor(MaterialPropertyBlock property)
         {
             property.SetColor(CubismShaderVariables.ScreenColor, ScreenColor);
         }
 
-        /// <summary>
-        /// Initializes the main texture if possible.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void TryInitializeScreenColor()
         {
             LastIsUseUserScreenColors = false;
@@ -967,9 +766,7 @@ namespace Live2D.Cubism.Rendering
             ApplyScreenColor();
         }
 
-        /// <summary>
-        /// Sets material from picker.
-        /// </summary>
+        /// 입력: 없음; 반환: Material.
         public Material SetMaterialFromPicker()
         {
             Material material = null;
@@ -1001,9 +798,7 @@ namespace Live2D.Cubism.Rendering
             return material;
         }
 
-        /// <summary>
-        /// Initializes the mesh renderer.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void TryInitializeMeshRenderer()
         {
             if (!_meshRenderer)
@@ -1011,7 +806,7 @@ namespace Live2D.Cubism.Rendering
                 _meshRenderer = GetComponent<MeshRenderer>();
 
 
-                // Lazily add component.
+                // 필요한 Unity MeshRenderer를 처음 접근할 때만 추가합니다.
                 if (!_meshRenderer)
                 {
                     _meshRenderer = gameObject.AddComponent<MeshRenderer>();
@@ -1034,8 +829,7 @@ namespace Live2D.Cubism.Rendering
             }
 #endif
 
-            // The batched fast path never renders through the MeshRenderer, so avoid
-            // instantiating a per-renderer material copy.
+            // 배치 경로는 MeshRenderer로 draw하지 않으므로 renderer별 material 복제를 만들지 않습니다.
             if (IsBatchedRenderingTarget())
             {
                 return;
@@ -1047,9 +841,7 @@ namespace Live2D.Cubism.Rendering
             }
         }
 
-        /// <summary>
-        /// Initializes the mesh filter for Scene View picking.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void TryInitializeMeshFilter()
         {
 #if UNITY_EDITOR
@@ -1066,7 +858,7 @@ namespace Live2D.Cubism.Rendering
 
             _meshFilter = GetComponent<MeshFilter>();
 
-            // Lazily add component if missing.
+            // 편집기 picking용 MeshFilter가 없을 때만 추가합니다.
             if (_meshFilter == null)
             {
                 _meshFilter = gameObject.AddComponent<MeshFilter>();
@@ -1079,9 +871,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 #if UNITY_EDITOR
-        /// <summary>
-        /// Sets up materials for Scene View picking.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void SetupPickingMaterial()
         {
             if (_meshRenderer == null)
@@ -1093,7 +883,7 @@ namespace Live2D.Cubism.Rendering
 
             if (_drawMaterial == null)
             {
-                // If current material is TransparentPicking or null, get the correct material via picker.
+                // 현재 재질이 picking용 또는 비어 있으면 drawable 상태에 맞는 실제 재질을 다시 고릅니다.
                 if (currentMaterial == null
                     || currentMaterial == CubismBuiltinMaterials.TransparentPicking
                     || (currentMaterial.shader != null && currentMaterial.shader.name == "Live2D Cubism/TransparentPicking"))
@@ -1108,16 +898,14 @@ namespace Live2D.Cubism.Rendering
 
             _meshRenderer.sharedMaterial = CubismBuiltinMaterials.TransparentPicking;
 
-            // Set MainTexture for alpha test in picking shader.
+            // picking shader의 알파 테스트가 실제 질감을 읽도록 MainTexture를 연결합니다.
             if (MainTexture != null)
             {
                 ApplyMainTexture();
             }
         }
 
-        /// <summary>
-        /// Syncs the current mesh to the MeshFilter for Scene View picking.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void SyncMeshFilterForPicking()
         {
             if (DrawObjectType != CubismModelTypes.DrawObjectType.Drawable)
@@ -1135,21 +923,17 @@ namespace Live2D.Cubism.Rendering
 #endif
 
 
-        /// <summary>
-        /// Initializes the mesh if necessary.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void TryInitializeMesh()
         {
-            // The batched fast path draws from its own shared mesh; skip the
-            // per-drawable double-buffered meshes entirely.
+            // 배치 경로는 공유 mesh를 그리므로 per-Drawable double-buffer mesh 생성을 건너뜁니다.
             if (IsBatchedRenderingTarget())
             {
                 return;
             }
 
-            // Only create mesh if necessary.
-            // HACK: 'Mesh != null' is individually implemented to avoid errors caused by the absence of a backing field.
-            // HACK: 'Mesh.vertex > 0' makes sure mesh is recreated in case of runtime instantiation.
+            // 기존 mesh가 없거나 런타임 생성 후 정점이 비어 있을 때만 double-buffer mesh를 만듭니다.
+            // Mesh 속성은 backing field가 없어 null 검사를 별도로 해야 하며, 빈 정점은 재생성 대상으로 봅니다.
             if ((Meshes != null && Meshes.Length == 2
                 && Mesh != null && Mesh.vertexCount > 0
                 && Drawable?.VertexPositions != null && Mesh.vertexCount == Drawable?.VertexPositions.Length)
@@ -1195,14 +979,12 @@ namespace Live2D.Cubism.Rendering
                 mesh.RecalculateBounds();
 
 
-                // Store mesh.
+                // 새 mesh를 front/back 슬롯에 보관합니다.
                 Meshes[i] = mesh;
             }
         }
 
-        /// <summary>
-        /// Initializes vertex colors.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void TryInitializeVertexColor()
         {
             if (Mesh == null)
@@ -1223,9 +1005,7 @@ namespace Live2D.Cubism.Rendering
             }
         }
 
-        /// <summary>
-        /// Initializes the main texture if possible.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void TryInitializeMainTexture()
         {
             if (!MainTexture)
@@ -1237,9 +1017,7 @@ namespace Live2D.Cubism.Rendering
             ApplyMainTexture();
         }
 
-        /// <summary>
-        /// Initializes components if possible.
-        /// </summary>
+        /// 입력: renderController(CubismRenderController); 반환: 없음.
         public void TryInitialize(CubismRenderController renderController)
         {
             RenderController = renderController;
@@ -1269,9 +1047,7 @@ namespace Live2D.Cubism.Rendering
 
         #region Swap Info
 
-        /// <summary>
-        /// Sets <see cref="NewVertexPositions"/>.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void SetNewVertexPositions()
         {
             var swapInfo = ThisSwap;
@@ -1280,9 +1056,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Sets <see cref="NewVertexColors"/>.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void SetNewVertexColors()
         {
             var swapInfo = ThisSwap;
@@ -1291,9 +1065,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Sets <see cref="DidBecomeVisible"/> on visible.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void BecomeVisible()
         {
             var swapInfo = ThisSwap;
@@ -1302,9 +1074,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Sets <see cref="DidBecomeInvisible"/> on invisible.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void BecomeInvisible()
         {
             var swapInfo = ThisSwap;
@@ -1313,9 +1083,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Sets <see cref="SetNewRenderOrder"/>.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void SetNewRenderOrder()
         {
             var swapInfo = ThisSwap;
@@ -1324,18 +1092,14 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Resets flags.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void ResetSwapInfoFlags()
         {
             ThisSwap = default;
         }
 
 
-        /// <summary>
-        /// Reset visibility flags.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void ResetVisibilityFlags()
         {
             var swapInfo = LastSwap;
@@ -1345,9 +1109,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Reset render order flag.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void ResetRenderOrderFlag()
         {
             var swapInfo = LastSwap;
@@ -1356,34 +1118,16 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Allows tracking of <see cref="Mesh"/> data changed on a swap.
-        /// </summary>
         private struct SwapInfo
         {
-            /// <summary>
-            /// Vertex positions were changed.
-            /// </summary>
             public bool NewVertexPositions { get; set; }
 
-            /// <summary>
-            /// Vertex colors were changed.
-            /// </summary>
             public bool NewVertexColors { get; set; }
 
-            /// <summary>
-            /// Visibility were changed to visible.
-            /// </summary>
             public bool DidBecomeVisible { get; set; }
 
-            /// <summary>
-            /// Visibility were changed to invisible.
-            /// </summary>
             public bool DidBecomeInvisible { get; set; }
 
-            /// <summary>
-            /// Render order were changed.
-            /// </summary>
             public bool NewRenderOrder { get; set; }
         }
 
@@ -1393,9 +1137,7 @@ namespace Live2D.Cubism.Rendering
 
         #region Unity Events Handling
 
-        /// <summary>
-        /// Finalizes instance.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void OnDestroy()
         {
             if (Meshes == null)

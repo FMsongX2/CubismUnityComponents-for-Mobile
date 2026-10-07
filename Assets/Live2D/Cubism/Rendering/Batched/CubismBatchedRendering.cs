@@ -4,6 +4,7 @@
  * Use of this source code is governed by the Live2D Open Software license
  * that can be found at https://www.live2d.com/eula/live2d-open-software-license-agreement_en.html.
  */
+// 모바일 배치 렌더 경로의 전역 선택값과 공유 shader를 보관합니다.
 
 
 using UnityEngine;
@@ -12,78 +13,29 @@ using UnityEngine.Rendering;
 
 namespace Live2D.Cubism.Rendering
 {
-    /// <summary>
-    /// Global switches and shared resources for the mobile batched fast path.
-    /// </summary>
     public static class CubismBatchedRendering
     {
-        /// <summary>
-        /// Master switch. When false every model renders through the legacy path.
-        /// Changes take effect for controllers enabled afterwards.
-        /// </summary>
         public static bool Enabled = true;
 
-        /// <summary>
-        /// When true and every render controller group is batched, models draw straight
-        /// into the camera target, skipping the intermediate full-screen texture, its
-        /// clears, and the final blit (~0.4ms GPU on a 2024 flagship). Additive and
-        /// multiplicative drawables then blend against the scene behind the model
-        /// (identical to the pre-5.2 renderer) instead of against a transparent buffer.
-        /// Off by default: the buffered composition keeps the exact legacy blend
-        /// semantics for any model content and renders through the same offscreen
-        /// texture + blit sequence the stock pipeline has always used.
-        /// </summary>
         public static bool DrawToCameraTargetDirectly = false;
 
-        /// <summary>
-        /// When true, the direct path is also taken automatically on frames where every
-        /// batched model only blends "over" (no Add, no Multiply). That case has no
-        /// semantic difference to protect: "over" is associative, so compositing into
-        /// the buffer first and compositing straight into the camera target produce the
-        /// same pixels. Set false to keep the direct path strictly opt-in through
-        /// <see cref="DrawToCameraTargetDirectly"/>.
-        /// </summary>
+        /// true면 배치 모델이 전부 "over"만 쓰는 프레임에서도 direct 경로를 자동으로 탑니다.
+        /// 그 경우엔 지킬 시맨틱 차이가 없습니다. "over"는 결합법칙이 성립해 버퍼를 거친 합성과
+        /// 카메라 타깃 직접 합성의 픽셀이 같습니다. false면 DrawToCameraTargetDirectly로만 켜집니다.
         public static bool AutoDrawToCameraTargetDirectly = true;
 
-        /// <summary>
-        /// When true, a model whose world extent misses the camera frustum records
-        /// neither its mask atlas pass nor its batches. The extent is unioned from the
-        /// drawables' current vertices, not from the canvas rectangle, so deformed parts
-        /// reaching past the canvas cannot pop off at the screen edge. Set false to
-        /// submit every batched model regardless of where it sits.
-        /// </summary>
+        /// true면 월드 AABB가 카메라 절두체를 벗어난 모델은 마스크 아틀라스 패스도 배치도 기록하지 않습니다.
+        /// AABB는 canvas 사각형이 아니라 Drawable의 현재 정점에서 합치므로,
+        /// canvas를 벗어난 변형 파츠가 화면 가장자리에서 튀지 않습니다.
+        /// false면 위치와 무관하게 모든 배치 모델을 제출합니다.
         public static bool CullOffscreenModels = true;
 
-        /// <summary>
-        /// When true, models whose textures share size/format/mips get a runtime
-        /// <see cref="Texture2DArray"/> so texture switches stop splitting batches.
-        /// The array duplicates the source textures in memory, so it is skipped on
-        /// devices below <see cref="TextureArrayMinimumSystemMemoryMegabytes"/>;
-        /// per-texture batching still applies there.
-        /// </summary>
         public static bool UseTextureArray = true;
 
-        /// <summary>
-        /// Minimum <see cref="SystemInfo.systemMemorySize"/> (MB) for the runtime
-        /// texture array. Below this, batching splits per texture instead of
-        /// spending an extra texture-set worth of memory. 0 disables the check.
-        /// </summary>
         public static int TextureArrayMinimumSystemMemoryMegabytes = 4096;
 
-        /// <summary>
-        /// Seconds to wait after a model (re)build before snapshotting the source
-        /// textures into the runtime <see cref="Texture2DArray"/>. Textures still in
-        /// the async GPU upload queue (scene load, app cold start) can hold
-        /// placeholder content; a per-texture binding follows the upload
-        /// transparently, but the array copy would freeze that placeholder
-        /// permanently. Until the window passes the model batches per texture
-        /// (visually identical). 0 copies immediately.
-        /// </summary>
         public static float TextureArrayActivationDelaySeconds = 3.0f;
 
-        /// <summary>
-        /// Effective texture-array switch after device constraints.
-        /// </summary>
         internal static bool TextureArrayAllowed
         {
             get
@@ -94,9 +46,6 @@ namespace Live2D.Cubism.Rendering
             }
         }
 
-        /// <summary>
-        /// Mesh update flags used for all batched mesh uploads.
-        /// </summary>
         internal const MeshUpdateFlags UpdateFlags =
             MeshUpdateFlags.DontValidateIndices
             | MeshUpdateFlags.DontNotifyMeshUsers
@@ -104,14 +53,8 @@ namespace Live2D.Cubism.Rendering
             | MeshUpdateFlags.DontResetBoneBounds;
 
 
-        /// <summary>
-        /// <see cref="Shader"/> backing field.
-        /// </summary>
         private static Shader _shader;
 
-        /// <summary>
-        /// The batched drawable shader.
-        /// </summary>
         public static Shader Shader
         {
             get

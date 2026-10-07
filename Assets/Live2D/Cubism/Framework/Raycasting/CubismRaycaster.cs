@@ -4,6 +4,7 @@
  * Use of this source code is governed by the Live2D Open Software license
  * that can be found at https://www.live2d.com/eula/live2d-open-software-license-agreement_en.html.
  */
+// 모델의 Raycastable Drawable 캐시를 만들고, 화면 광선을 Drawable 기하와 교차시킵니다.
 
 
 using Live2D.Cubism.Core;
@@ -14,54 +15,31 @@ using UnityEngine;
 
 namespace Live2D.Cubism.Framework.Raycasting
 {
-    /// <summary>
-    /// Allows casting rays against <see cref="CubismRaycastable"/>s.
-    /// </summary>
     public sealed class CubismRaycaster : MonoBehaviour
     {
-        /// <summary>
-        /// <see cref="CubismRenderer"/>s with <see cref="CubismRaycastable"/>s attached.
-        /// </summary>
         private CubismRenderer[] Raycastables { get; set; }
 
-        /// <summary>
-        /// <see cref="CubismDrawable"/>s belonging to <see cref="Raycastables"/>.
-        /// Geometry is read from the drawables (core data) instead of the renderer
-        /// meshes so raycasting works with the batched fast path, which creates no
-        /// per-drawable meshes.
-        /// </summary>
         private CubismDrawable[] RaycastableDrawables { get; set; }
 
-        /// <summary>
-        /// <see cref="CubismRaycastablePrecision"/>s with <see cref="CubismRaycastable"/>s attached.
-        /// </summary>
         private CubismRaycastablePrecision[] RaycastablePrecisions { get; set; }
 
-        /// <summary>
-        /// Triangle indices per raycastable. Indices never change for a given model,
-        /// so they are pulled once instead of reallocating on every raycast.
-        /// </summary>
+        /// Raycastable별 삼각형 인덱스. 모델이 바뀌기 전엔 불변이라 Refresh에서 한 번만 뽑습니다.
         private int[][] RaycastableIndices { get; set; }
 
-        /// <summary>
-        /// Reusable vertex buffers sized to the largest raycastable. Raycasting runs
-        /// per frame in hit-testing games, so neither buffer may allocate per call.
-        /// </summary>
+        /// 최대 정점 수에 맞춘 재사용 버퍼. 매 프레임 히트테스트에서 호출당 할당이 나면 안 됩니다.
         private Vector3[] _localVertexScratch;
         private Vector3[] _worldVertexScratch;
 
 
-        /// <summary>
-        /// Refreshes the controller. Call this method after adding and/or removing <see cref="CubismRaycastable"/>.
-        /// </summary>
-        private void Refresh()
+        /// 입력: 없음; 반환: 없음.
+        public void Refresh()
         {
             var candidates = this
                 .FindCubismModel()
                 .Drawables;
 
 
-            // Find raycastable drawables.
+            // 모델 Drawable 중 Raycastable 컴포넌트가 활성인 대상만 찾습니다.
             var raycastables = new List<CubismRenderer>();
             var raycastableDrawables = new List<CubismDrawable>();
             var raycastablePrecisions = new List<CubismRaycastablePrecision>();
@@ -70,7 +48,7 @@ namespace Live2D.Cubism.Framework.Raycasting
             for (var i = 0; i < candidates.Length; i++)
             {
                 var raycastable = candidates[i].GetComponent<CubismRaycastable>();
-                // Skip non-raycastables.
+                // Raycastable이 없거나 비활성이면 입력·판정 cache에서 제외합니다.
                 if (!raycastable
                     || !raycastable.isActiveAndEnabled)
                 {
@@ -84,13 +62,13 @@ namespace Live2D.Cubism.Framework.Raycasting
             }
 
 
-            // Cache raycastables.
+            // 이번 검색 결과로 renderer·Drawable·정밀도 cache를 함께 교체합니다.
             Raycastables = raycastables.ToArray();
             RaycastableDrawables = raycastableDrawables.ToArray();
             RaycastablePrecisions = raycastablePrecisions.ToArray();
 
 
-            // Cache the static triangle indices and size the scratch buffers once.
+            // 불변인 삼각형 인덱스를 캐시하고 스크래치 버퍼 크기를 여기서 확정합니다.
             RaycastableIndices = new int[RaycastableDrawables.Length][];
 
             var maximumVertexCount = 0;
@@ -113,39 +91,22 @@ namespace Live2D.Cubism.Framework.Raycasting
 
         #region Unity Event Handling
 
-        /// <summary>
-        /// Called by Unity. Makes sure cache is initialized.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void Start()
         {
-            // Initialize cache.
+            // 첫 Raycast 전에 scene의 Raycastable 상태를 cache에 채웁니다.
             Refresh();
         }
 
         #endregion
 
-        /// <summary>
-        /// Casts a ray.
-        /// </summary>
-        /// <param name="origin">The origin of the ray.</param>
-        /// <param name="direction">The direction of the ray.</param>
-        /// <param name="result">The result of the cast.</param>
-        /// <param name="maximumDistance">[Optional] The maximum distance of the ray.</param>
-        /// <returns><see langword="true"/> in case of a hit; <see langword="false"/> otherwise.</returns>
-        /// <returns>The numbers of drawables had hit</returns>
+        /// 입력: origin(Vector3), direction(Vector3), result(CubismRaycastHit[]), maximumDistance(float); 반환: int.
         public int Raycast(Vector3 origin, Vector3 direction, CubismRaycastHit[] result, float maximumDistance = 10000.0f)
         {
             return Raycast(new Ray(origin, direction), result, maximumDistance);
         }
 
-        /// <summary>
-        /// Casts a ray.
-        /// </summary>
-        /// <param name="ray"></param>
-        /// <param name="result">The result of the cast.</param>
-        /// <param name="maximumDistance">[Optional] The maximum distance of the ray.</param>
-        /// <returns><see langword="true"/> in case of a hit; <see langword="false"/> otherwise.</returns>
-        /// <returns>The numbers of drawables had hit</returns>
+        /// 입력: ray(Ray), result(CubismRaycastHit[]), maximumDistance(float); 반환: int.
         public int Raycast(Ray ray, CubismRaycastHit[] result, float maximumDistance = 10000.0f)
         {
             var origin = ray.origin;
@@ -155,7 +116,7 @@ namespace Live2D.Cubism.Framework.Raycasting
                 result[i] = new CubismRaycastHit();
             }
 
-            // Cast against each raycastable.
+            // cache의 각 활성 Drawable에 같은 광선을 차례로 검사합니다.
             var hitCount = 0;
 
             for (var i = 0; i < Raycastables.Length; i++)
@@ -180,7 +141,7 @@ namespace Live2D.Cubism.Framework.Raycasting
 
                     ++hitCount;
 
-                    // Exit if result buffer is full.
+                    // 호출자 버퍼가 가득 차면 더 찾지 않아 범위를 넘겨 쓰지 않습니다.
                     if (hitCount == result.Length)
                     {
                         break;
@@ -191,25 +152,11 @@ namespace Live2D.Cubism.Framework.Raycasting
             return hitCount;
         }
 
-        /// <summary>
-        /// The function to perform the raycast on the drawable.
-        /// </summary>
-        /// <param name="origin">The origin vector of the ray.</param>
-        /// <param name="normalizedDirection">The direction vector of the ray.</param>
-        /// <param name="length">The max length of the ray from the origin.</param>
-        /// <param name="precision">The precision of the raycast.</param>
-        /// <param name="drawable">The drawable to perform the raycast against.</param>
-        /// <param name="indices">Cached triangle indices of <paramref name="drawable"/>.</param>
-        /// <param name="hitPosition">The hit position of the ray.</param>
-        /// <param name="hitNormal">The hit normal of the ray.</param>
-        /// <param name="hitTime">The [0, 1] parameter of the ray where the hit point is between `Origin` and `Origin + Direction`.</param>
-        /// <returns>Did the Intersection Occur.</returns>
+        /// 입력: origin(Vector3), normalizedDirection(Vector3), length(float), precision(CubismRaycastablePrecision), drawable(CubismDrawable), hitPosition(out Vector3), hitNormal(out Vector3), hitTime(out float); 반환: bool.
         private bool RaycastDrawable(Vector3 origin, Vector3 normalizedDirection, float length, CubismRaycastablePrecision precision, CubismDrawable drawable, int[] indices, out Vector3 hitPosition, out Vector3 hitNormal, out float hitTime)
         {
-            // Geometry comes from the core-backed drawable data, which is valid for
-            // both the legacy per-drawable meshes and the batched fast path. The read
-            // goes into a reusable buffer: the allocating VertexPositions getter would
-            // produce garbage on every raycast against every raycastable.
+            // 기하는 core가 소유한 Drawable 데이터에서 읽으므로 legacy 개별 mesh와 batch 경로 모두에서 같습니다.
+            // 재사용 버퍼로 읽습니다. 할당하는 VertexPositions getter는 raycast마다 가비지를 냅니다.
             var vertices = _localVertexScratch;
             var vertexCount = drawable.ReadVertexPositionsInto(vertices);
 
@@ -233,27 +180,26 @@ namespace Live2D.Cubism.Framework.Raycasting
 
             var bounds = new Bounds((min + max) * 0.5f, max - min);
 
-            // Transform the ray into the coordinate system of the bounds to account for bounds rotation.
+            // 회전한 Drawable Bounds와 비교할 수 있도록 광선 양 끝을 Drawable local 좌표로 바꿉니다.
             var start = drawable.transform.InverseTransformPoint(origin);
             var end = drawable.transform.InverseTransformPoint(origin + normalizedDirection * length);
             if (!LineExtentBoxIntersection(bounds, start, end, Vector3.zero, out hitPosition, out hitNormal, out hitTime))
             {
                 return false;
             }
-            // Convert the hit location back to the global coordinate system.
+            // local Bounds 교차 위치를 호출자에게 돌려줄 월드 좌표로 다시 바꿉니다.
             hitPosition = drawable.transform.TransformPoint(hitPosition);
 
             switch (precision)
             {
                 case CubismRaycastablePrecision.BoundingBox:
                     {
-                        // already checked
+                        // Bounds 판정이 이미 이 정밀도의 적중 여부를 확정했습니다.
                         break;
                     }
                 case CubismRaycastablePrecision.Triangles:
                     {
-                        // Indices only reference vertices below vertexCount, so the
-                        // scratch buffer may be larger than this drawable needs.
+                        // 인덱스는 vertexCount 미만만 참조하므로 스크래치가 더 커도 안전합니다.
                         var positions = _worldVertexScratch;
                         var drawableTransform = drawable.transform;
 
@@ -278,17 +224,7 @@ namespace Live2D.Cubism.Framework.Raycasting
             return true;
         }
 
-        /// <summary>
-        /// The function to check the intersection between the ray and the mesh.
-        /// </summary>
-        /// <param name="origin">The origin vector of the ray.</param>
-        /// <param name="direction">The direction vector of the ray.</param>
-        /// <param name="length">The max length of the ray from the origin.</param>
-        /// <param name="positions">The vertex positions of the mesh.</param>
-        /// <param name="indices">The vertex indices of the mesh.</param>
-        /// <param name="hitPosition">The hit position of the ray.</param>
-        /// <param name="hitTime">The [0, 1] parameter of the ray where the hit point is between `Start` and `End`.</param>
-        /// <returns>Did the Intersection Occur.</returns>
+        /// 입력: origin(Vector3), direction(Vector3), length(float), positions(IReadOnlyList<Vector3>), indices(int[]), hitPosition(out Vector3), hitTime(out float); 반환: bool.
         private bool RayIntersectMesh(Vector3 origin, Vector3 direction, float length, IReadOnlyList<Vector3> positions, int[] indices, out Vector3 hitPosition, out float hitTime)
         {
             hitPosition = Vector3.zero;
@@ -308,18 +244,7 @@ namespace Live2D.Cubism.Framework.Raycasting
             return false;
         }
 
-        /// <summary>
-        /// The function to check the intersection between the ray and the triangle.
-        /// </summary>
-        /// <param name="origin">The origin vector of the ray.</param>
-        /// <param name="direction">The direction vector of the ray.</param>
-        /// <param name="length">The max length of the ray from the origin.</param>
-        /// <param name="t0">The first vertex of the triangle.</param>
-        /// <param name="t1">The second vertex of the triangle.</param>
-        /// <param name="t2">The third vertex of the triangle.</param>
-        /// <param name="hitPosition">The hit position of the ray.</param>
-        /// <param name="hitTime">The [0, 1] parameter of the ray where the hit point is between `Start` and `End`.</param>
-        /// <returns>Did the Intersection Occur.</returns>
+        /// 입력: origin(Vector3), direction(Vector3), length(float), t0(Vector3), t1(Vector3), t2(Vector3), hitPosition(out Vector3), hitTime(out float); 반환: bool.
         private bool RayIntersectTriangle(Vector3 origin, Vector3 direction, float length, Vector3 t0, Vector3 t1, Vector3 t2, out Vector3 hitPosition, out float hitTime)
         {
             hitPosition = Vector3.zero;
@@ -371,17 +296,7 @@ namespace Live2D.Cubism.Framework.Raycasting
             return true;
         }
 
-        /// <summary>
-        /// Line-extent/Box Test Util
-        /// </summary>
-        /// <param name="inBox">The box bounds.</param>
-        /// <param name="start">Start of line segment.</param>
-        /// <param name="end">End of line segment.</param>
-        /// <param name="extent">The box bounds extent.</param>
-        /// <param name="hitLocation">The hit position of the ray.</param>
-        /// <param name="hitNormal">The hit normal of the ray.</param>
-        /// <param name="hitTime">The [0, 1] parameter of the ray where the hit point is between `Origin` and `Origin + Direction`.</param>
-        /// <returns></returns>
+        /// 입력: inBox(Bounds), start(Vector3), end(Vector3), extent(Vector3), hitLocation(out Vector3), hitNormal(out Vector3), hitTime(out float); 반환: bool.
         private static bool LineExtentBoxIntersection(Bounds inBox, Vector3 start, Vector3 end, Vector3 extent, out Vector3 hitLocation, out Vector3 hitNormal, out float hitTime)
         {
             hitLocation = Vector3.zero;
@@ -488,14 +403,14 @@ namespace Live2D.Cubism.Framework.Raycasting
                 time.z = 0.0f;
             }
 
-            // If the line started inside the box (ie. player started in contact with the fluid)
+            // 선분 시작점이 box 안이면 즉시 적중으로 처리합니다.
             if (inside)
             {
                 hitLocation = start;
                 hitNormal.z = 0;
                 return true;
             }
-            // Otherwise, calculate when hit occured
+            // 바깥에서 시작했다면 가장 먼저 만나는 축의 교차 시점을 계산합니다.
             else
             {
                 if (time.y > time.z)

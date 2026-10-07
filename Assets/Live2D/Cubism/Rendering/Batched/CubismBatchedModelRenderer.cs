@@ -4,6 +4,8 @@
  * Use of this source code is governed by the Live2D Open Software license
  * that can be found at https://www.live2d.com/eula/live2d-open-software-license-agreement_en.html.
  */
+// Live2D 모델 전체를 동적 mesh 하나로 합치고 같은 상태의 Drawable과 mask를 묶어 draw call을 줄입니다.
+// 변경된 정점 범위만 GPU에 쓰고 mask atlas는 내용이 달라질 때만 다시 그리는 모바일 렌더 경로입니다.
 
 
 using Live2D.Cubism.Core;
@@ -18,45 +20,23 @@ using UnityEngine.Rendering;
 
 namespace Live2D.Cubism.Rendering
 {
-    /// <summary>
-    /// Renders a whole model through a single dynamic mesh with one draw call per
-    /// state batch instead of one draw call per drawable, and renders all clipping
-    /// masks into a tiled atlas once per frame instead of re-rendering them per
-    /// masked drawable. Used by the mobile fast path when
-    /// <see cref="CubismRenderController.IsBatchedRenderingActive"/> is set.
-    /// </summary>
     public sealed class CubismBatchedModelRenderer : IDisposable
     {
-        /// <summary>
-        /// Maximum mask groups per model (limited by the shader parameter arrays;
-        /// slot 0 is reserved for "not masked").
-        /// </summary>
         public const int MaxMaskGroups = 64;
 
-        /// <summary>
-        /// Resolution of the mask atlas render texture.
-        /// </summary>
         public static int MaskAtlasSize = 1024;
 
-        /// <summary>
-        /// Resolution used below <see cref="MaskAtlasFullSizeMinimumSystemMemoryMegabytes"/>.
-        /// One atlas lives per model at ARGB32, so 1024 costs ~4 MB each and halving the
-        /// edge quarters that. The trade is mask edge quality: the tile layout floors a
-        /// tile at a quarter of the atlas, which is 256 px at 1024 and 128 px at 512,
-        /// and sharp small clip regions (hair strands, eyes) alias visibly below 256 px.
-        /// Set equal to <see cref="MaskAtlasSize"/> to disable the tier.
-        /// </summary>
+        /// MaskAtlasFullSizeMinimumSystemMemoryMegabytes 미만인 기기에서 쓰는 해상도.
+        /// 아틀라스는 모델당 1장 ARGB32라 1024면 약 4MB고 변을 절반으로 줄이면 1/4이 됩니다.
+        /// 대가는 마스크 에지 품질입니다. 타일 하한이 아틀라스의 1/4이라 1024에서 256px,
+        /// 512에서 128px이 되는데, 머리카락·눈 같은 작은 클립 영역은 256px 미만에서 눈에 띄게 앨리어싱됩니다.
+        /// MaskAtlasSize와 같게 두면 티어링이 꺼집니다.
         public static int MaskAtlasSizeLowMemory = 512;
 
-        /// <summary>
-        /// Minimum <see cref="SystemInfo.systemMemorySize"/> (MB) for the full-size mask
-        /// atlas. 0 disables the check.
-        /// </summary>
+        /// 풀사이즈 마스크 아틀라스를 쓰기 위한 최소 SystemInfo.systemMemorySize(MB). 0이면 검사 안 함.
         public static int MaskAtlasFullSizeMinimumSystemMemoryMegabytes = 3072;
 
-        /// <summary>
-        /// Mask atlas edge length after the device memory tier.
-        /// </summary>
+        /// 기기 메모리 티어를 반영한 마스크 아틀라스 변 길이.
         internal static int EffectiveMaskAtlasSize
         {
             get
@@ -90,25 +70,15 @@ namespace Live2D.Cubism.Rendering
 
         #region Types
 
-        /// <summary>
-        /// Interleaved layout of vertex stream 1 (all low-frequency per-vertex data).
-        /// Field order must match the vertex attribute declaration (Color, TexCoord1, TexCoord2).
-        /// </summary>
         private struct Stream1Data
         {
-            /// <summary>Tint color; alpha premultiplied with drawable opacity.</summary>
             public Color32 Color;
 
-            /// <summary>Multiply color in rgb, mask group index in a.</summary>
             public Color32 MultiplyAndGroup;
 
-            /// <summary>Screen color in rgb, mask invert flag in a.</summary>
             public Color32 ScreenAndInvert;
         }
 
-        /// <summary>
-        /// A run of consecutive drawables sharing render state; drawn with one draw call.
-        /// </summary>
         private struct Batch
         {
             public int TextureSlot;
@@ -118,9 +88,6 @@ namespace Live2D.Cubism.Rendering
             public int IndexCount;
         }
 
-        /// <summary>
-        /// Static per-frame mask atlas draw (all mask meshes of one group sharing one texture).
-        /// </summary>
         private struct MaskSection
         {
             public int GroupIndex;
@@ -137,28 +104,24 @@ namespace Live2D.Cubism.Rendering
         private CubismRenderController _controller;
         private CubismRenderer[] _renderersByDrawable;
 
-        // Vertices are pulled straight from the drawables, so the managed copy the core
-        // makes into CubismDynamicDrawableData is suppressed while this renderer owns
-        // the model. The array reference is kept so the suppression can be lifted on
-        // teardown without waiting for another core event.
+        // 정점을 Drawable에서 직접 읽으므로, 이 렌더러가 모델을 소유하는 동안에는
+        // 코어가 CubismDynamicDrawableData로 뜨는 관리 배열 복사를 억제합니다.
+        // 배열 참조를 들고 있어야 코어 이벤트를 더 기다리지 않고 억제를 풀 수 있습니다.
         private CubismDrawable[] _drawablesByIndex;
         private CubismDynamicDrawableData[] _suppressedDynamicData;
 
-        // Sort depth lives in the position stream's z and is only rewritten when the
-        // render order or the depth configuration changes.
+        // 정렬 깊이는 위치 스트림의 z에 있고, 렌더 순서나 깊이 설정이 바뀔 때만 다시 씁니다.
         private float _appliedDepthOffset;
         private bool _appliedSortZ;
 
-        // True when any drawable blends against the destination (Add, Multiply).
-        // Such a model must composite through the offscreen buffer to keep the legacy
-        // semantics; a model that only blends "over" is associative and composites the
-        // same either way.
+        // 목적지를 읽는 블렌드(Add, Multiply)를 쓰는 Drawable이 하나라도 있으면 true.
+        // 그런 모델은 legacy 시맨틱 유지를 위해 오프스크린 버퍼를 거쳐야 합니다.
+        // "over"만 쓰는 모델은 결합법칙이 성립해 어느 쪽으로 합성하든 결과가 같습니다.
         private bool _hasDestinationDependentBlend;
 
-        // Per-drawable extents, refreshed by the same loop that reads the vertices, and
-        // the model extent unioned from them. The mesh bounds cannot serve here: they
-        // are the canvas rectangle, which deformed parts routinely exceed, so culling
-        // against them would pop parts off at the screen edge.
+        // Drawable별 AABB. 정점을 읽는 같은 루프에서 갱신하고, 이를 합쳐 모델 AABB를 만듭니다.
+        // mesh bounds는 canvas 사각형이라 변형된 파츠가 자주 벗어나므로 컬링 기준으로 쓸 수 없습니다.
+        // 그걸로 컬링하면 화면 가장자리에서 파츠가 튑니다.
         private Vector2[] _drawableMinimum;
         private Vector2[] _drawableMaximum;
         private Bounds _localModelBounds;
@@ -169,7 +132,6 @@ namespace Live2D.Cubism.Rendering
         private int _totalIndexCount;
         private int _maskIndexCount;
 
-        // Per-drawable static tables (indexed by unmanaged drawable index).
         private int[] _vertexBase;
         private int[] _vertexCount;
         private int[] _indexBase;
@@ -180,13 +142,11 @@ namespace Live2D.Cubism.Rendering
         private bool[] _isInverted;
         private int[] _textureSlot;
 
-        // Per-drawable dynamic state.
         private float[] _opacities;
         private bool[] _visible;
         private int[] _renderOrders;
         private int[] _orderedDrawables;
 
-        // Vertex/index storage.
         private NativeArray<Vector3> _positions;
         private NativeArray<Stream1Data> _stream1;
         private NativeArray<Vector3> _uvs;
@@ -198,18 +158,15 @@ namespace Live2D.Cubism.Rendering
 
         private Mesh _mesh;
 
-        // Batching.
         private readonly List<Batch> _batches = new List<Batch>(32);
         private int _mainIndexCount;
 
-        // Textures / materials.
         private Texture[] _textures;
         private Texture2DArray _textureArray;
         private bool _useTextureArray;
         private readonly Dictionary<long, Material> _materials = new Dictionary<long, Material>();
         private MaterialPropertyBlock _modelProperties;
 
-        // Masks.
         private int _maskGroupCount;
         private int[][] _maskGroupMembers;
         private Vector4[] _maskTiles;
@@ -218,47 +175,28 @@ namespace Live2D.Cubism.Rendering
         private readonly List<SubMeshDescriptor> _maskSubMeshes = new List<SubMeshDescriptor>(32);
         private RenderTexture _maskAtlas;
 
-        // Scratch list for SetSubMeshes (mask sections + batches).
         private readonly List<SubMeshDescriptor> _subMeshScratch = new List<SubMeshDescriptor>(64);
 
-        // Dirty flags.
         private bool _positionsDirty;
         private bool _stream1Dirty;
         private bool _indicesDirty;
         private bool _texturesDirty;
 
-        // Dirty vertex ranges ([min, max) vertex indices) so partial updates upload
-        // only the touched span instead of the whole stream every frame.
         private int _positionsDirtyMin;
         private int _positionsDirtyMax;
         private int _stream1DirtyMin;
         private int _stream1DirtyMax;
 
-        // Mask atlas re-render gate: the atlas persists across frames, so it only
-        // needs re-rasterizing when a mask mesh moved or its contents may have been
-        // discarded (context loss, resume). Starts dirty for the first render.
         private bool _maskContentDirty = true;
 
-        // True once the current atlas contents were rendered and no discard-class
-        // event happened since; cleared to force a re-render regardless of motion.
         private bool _maskAtlasContentValid;
 
-        // Per-drawable: member of at least one mask group (moving it invalidates the atlas).
         private bool[] _isMaskGroupMember;
 
-        // Cached comparison for the defensive RebuildOrder sort (avoids a per-call closure).
         private Comparison<int> _renderOrderComparison;
 
-        /// <summary>
-        /// True while the texture-array snapshot waits for async texture uploads
-        /// to settle; the model batches per texture in the meantime.
-        /// </summary>
         private bool _textureArrayPending;
 
-        /// <summary>
-        /// Earliest <see cref="Time.realtimeSinceStartup"/> at which the source
-        /// textures may be snapshotted into the texture array.
-        /// </summary>
         private float _textureArrayActivationTime;
         private bool _receivedFirstData;
         private int _lastFlushedFrame = -1;
@@ -267,42 +205,27 @@ namespace Live2D.Cubism.Rendering
         private bool _isDisposed;
         private bool _isBroken;
 
-        /// <summary>
-        /// In linear color space the legacy path converts multiply/screen colors from
-        /// sRGB to linear via <see cref="MaterialPropertyBlock.SetColor"/>; vertex
-        /// attributes carry raw values, so the conversion happens on the CPU instead.
-        /// (Vertex tint colors are raw in the legacy path too and stay unconverted.)
-        /// </summary>
         private bool _convertBlendColorsToLinear;
 
         #endregion
 
 
-        /// <summary>
-        /// True when initialization succeeded and the renderer can record draws.
-        /// </summary>
         public bool IsValid
         {
             get { return !_isDisposed && !_isBroken && _mesh != null; }
         }
 
 
-        /// <summary>
-        /// True when this model has to composite through the offscreen buffer to keep
-        /// the legacy blend semantics. Only Add and Multiply read the destination;
-        /// "over" is associative, so a model without them composites identically
-        /// whether it lands in the buffer first or straight in the camera target.
-        /// </summary>
+        /// legacy 블렌드 시맨틱을 지키려면 오프스크린 버퍼를 거쳐야 하는 모델인지.
+        /// 목적지를 읽는 건 Add와 Multiply뿐이고 "over"는 결합법칙이 성립하므로,
+        /// 둘 다 없으면 버퍼를 거치든 카메라 타깃에 바로 그리든 결과가 같습니다.
         internal bool RequiresBufferedComposition
         {
             get { return _hasDestinationDependentBlend; }
         }
 
 
-        /// <summary>
-        /// Records a drawable's bind-pose extent so the model extent is complete before
-        /// the first core event arrives.
-        /// </summary>
+        /// Drawable의 bind pose AABB를 기록해 첫 코어 이벤트 전에도 모델 AABB가 완전하게 합니다.
         private void SeedDrawableExtent(int drawableIndex, Vector3[] positions)
         {
             if (positions == null || positions.Length < 1)
@@ -328,10 +251,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Unions the per-drawable extents into the model extent, padded along z by the
-        /// sort-depth range the position stream carries.
-        /// </summary>
+        /// Drawable별 AABB를 합쳐 모델 AABB를 만듭니다. z는 위치 스트림이 싣는 정렬 깊이만큼 넓힙니다.
         private void RefreshLocalModelBounds()
         {
             _localModelBoundsDirty = false;
@@ -372,11 +292,8 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// True when the model's world extent misses every plane of the frustum.
-        /// <see cref="CommandBuffer.DrawMesh"/> does not cull, so an offscreen model
-        /// would otherwise still pay for its mask atlas pass and all of its batches.
-        /// </summary>
+        /// 모델의 월드 AABB가 절두체 밖이면 true. CommandBuffer.DrawMesh는 컬링을 하지 않으므로
+        /// 화면 밖 모델도 마스크 아틀라스 패스와 전 배치를 그대로 제출하게 됩니다.
         internal bool IsCulledBy(Plane[] frustumPlanes)
         {
             if (frustumPlanes == null || _controller == null || _totalVertexCount < 1)
@@ -411,6 +328,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
+        /// 입력: baseVertex(int), count(int); 반환: 없음.
         private void MarkPositionsDirty(int baseVertex, int count)
         {
             if (!_positionsDirty)
@@ -426,6 +344,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
+        /// 입력: baseVertex(int), count(int); 반환: 없음.
         private void MarkStream1Dirty(int baseVertex, int count)
         {
             if (!_stream1Dirty)
@@ -443,12 +362,7 @@ namespace Live2D.Cubism.Rendering
 
         #region Initialization
 
-        /// <summary>
-        /// Checks whether a model qualifies for the batched fast path. Must not touch
-        /// <see cref="CubismRenderController.Renderers"/> as it runs before renderer
-        /// initialization; renderer-level conditions are validated separately in
-        /// <see cref="AreRenderersEligible"/>.
-        /// </summary>
+        /// 입력: controller(CubismRenderController); 반환: bool.
         public static bool IsModelEligible(CubismRenderController controller)
         {
             var model = controller.Model;
@@ -458,19 +372,19 @@ namespace Live2D.Cubism.Rendering
                 return false;
             }
 
-            // Blend color handlers receive per-drawable change events from the legacy path.
+            // blend 색상 handler는 legacy 경로의 drawable별 변경 event를 전제로 하므로 배치를 허용하지 않습니다.
             if (controller.MultiplyColorHandler != null || controller.ScreenColorHandler != null)
             {
                 return false;
             }
 
-            // Parts offscreens require the buffered legacy pipeline.
+            // Part offscreen은 중간 frame buffer가 필요한 legacy pipeline으로만 처리합니다.
             if (model.Offscreens != null && model.Offscreens.Length > 0)
             {
                 return false;
             }
 
-            // Only sorting modes whose draw sequence equals the core render order.
+            // core render order와 실제 draw 순서가 같은 정렬 방식만 한 mesh 배치로 합칠 수 있습니다.
             if (controller.SortingMode != CubismSortingMode.BackToFrontZ
                 && controller.SortingMode != CubismSortingMode.BackToFrontOrder)
             {
@@ -484,7 +398,7 @@ namespace Live2D.Cubism.Rendering
             {
                 var drawable = drawables[i];
 
-                // Only hardware-expressible blend modes qualify.
+                // GPU 고정 기능으로 표현 가능한 blend mode만 배치 대상이 됩니다.
                 switch (drawable.ColorBlend)
                 {
                     case BlendTypes.ColorBlend.Normal:
@@ -506,7 +420,7 @@ namespace Live2D.Cubism.Rendering
                 }
             }
 
-            // Mask groups must fit the shader parameter arrays (slot 0 is reserved).
+            // shader mask parameter 배열에 들어가야 하며 slot 0은 예약되어 있습니다.
             if (maskGroupKeys.Count > MaxMaskGroups - 1)
             {
                 return false;
@@ -516,13 +430,10 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Renderer-level eligibility, checked after renderers are initialized.
-        /// </summary>
+        /// 입력: controller(CubismRenderController); 반환: bool.
         public static bool AreRenderersEligible(CubismRenderController controller)
         {
-            // Per-drawable local sorting orders would reorder drawables away from
-            // the core render order.
+            // drawable별 local sorting order는 core render order를 바꾸므로 배치 순서를 보장할 수 없습니다.
             var renderers = controller.Renderers;
 
             for (var i = 0; i < renderers.Length; i++)
@@ -536,6 +447,7 @@ namespace Live2D.Cubism.Rendering
             return true;
         }
 
+        /// 입력: masks(CubismDrawable[]); 반환: string.
         private static string MaskGroupKey(CubismDrawable[] masks)
         {
             var indices = new int[masks.Length];
@@ -548,9 +460,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Builds all static tables, the mesh, materials, and the mask atlas.
-        /// </summary>
+        /// 입력: controller(CubismRenderController); 반환: 없음.
         public CubismBatchedModelRenderer(CubismRenderController controller)
         {
             _controller = controller;
@@ -567,6 +477,7 @@ namespace Live2D.Cubism.Rendering
             }
         }
 
+        /// 입력: 없음; 반환: 없음.
         private void Build()
         {
             var model = _controller.Model;
@@ -575,15 +486,14 @@ namespace Live2D.Cubism.Rendering
 
             _convertBlendColorsToLinear = QualitySettings.activeColorSpace == ColorSpace.Linear;
 
-            // Map renderers by unmanaged drawable index.
+            // native drawable index로 renderer를 바로 찾을 수 있게 매핑합니다.
             var drawableRenderers = _controller.DrawableRenderers;
             _renderersByDrawable = new CubismRenderer[_drawableCount];
             for (var i = 0; i < drawableRenderers.Length; i++)
             {
                 _renderersByDrawable[drawableRenderers[i].Drawable.UnmanagedIndex] = drawableRenderers[i];
 
-                // Editor-only: scene-picking MeshFilters persisted from edit mode would
-                // render their stale meshes through the regular pipeline during play.
+                // 편집기 picking용 MeshFilter가 Play에서 오래된 mesh를 일반 pipeline으로 그리지 않게 비활성화합니다.
                 var meshFilter = drawableRenderers[i].GetComponent<MeshFilter>();
                 if (meshFilter != null)
                 {
@@ -591,7 +501,7 @@ namespace Live2D.Cubism.Rendering
                 }
             }
 
-            // Static per-drawable tables.
+            // drawable마다 변하지 않는 정점·색상·재질 테이블을 구성합니다.
             _vertexBase = new int[_drawableCount];
             _vertexCount = new int[_drawableCount];
             _indexBase = new int[_drawableCount];
@@ -630,7 +540,7 @@ namespace Live2D.Cubism.Rendering
 
                 SeedDrawableExtent(unmanagedIndex, initialPositions[unmanagedIndex]);
 
-                _vertexBase[unmanagedIndex] = 0; // Filled below in index order.
+                _vertexBase[unmanagedIndex] = 0; // 아래 두 번째 반복에서 drawable index 순서의 실제 시작점을 채웁니다.
                 _vertexCount[unmanagedIndex] = vertexUvs[unmanagedIndex].Length;
                 _indexCount[unmanagedIndex] = localIndices[unmanagedIndex].Length;
                 _colorBlend[unmanagedIndex] = drawable.ColorBlend;
@@ -657,16 +567,15 @@ namespace Live2D.Cubism.Rendering
 
             _use32BitIndices = _totalVertexCount > ushort.MaxValue;
 
-            // Mask groups.
+            // mask 관계를 읽어 atlas tile과 shader mask 그룹을 구성합니다.
             BuildMaskGroups(drawables);
 
-            // Texture table + materials (also fills _textureSlot). The texture-array
-            // snapshot is deferred so pending async texture uploads can land first.
+            // 텍스처 표와 재질·slot을 만들되, 비동기 업로드가 끝난 뒤 texture array를 복사하도록 snapshot은 미룹니다.
             _textureArrayActivationTime = Time.realtimeSinceStartup
                 + CubismBatchedRendering.TextureArrayActivationDelaySeconds;
             BuildTextures();
 
-            // Vertex/index storage.
+            // 모든 drawable을 합칠 정점·인덱스 저장 공간을 할당합니다.
             _positions = new NativeArray<Vector3>(_totalVertexCount, Allocator.Persistent, NativeArrayOptions.ClearMemory);
             _stream1 = new NativeArray<Stream1Data>(_totalVertexCount, Allocator.Persistent, NativeArrayOptions.ClearMemory);
             _uvs = new NativeArray<Vector3>(_totalVertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
@@ -682,8 +591,7 @@ namespace Live2D.Cubism.Rendering
                     _uvs[baseVertex + v] = new Vector3(uvs[v].x, uvs[v].y, slice);
                 }
 
-                // Initial vertex positions: the core only flags dirty drawables in its
-                // dynamic data, so drawables that never move must start out correct here.
+                // core는 움직인 drawable만 dirty로 주므로, 한 번도 움직이지 않는 drawable도 여기서 초기 정점을 채웁니다.
                 var positions = initialPositions[i];
 
                 if (positions != null)
@@ -704,7 +612,7 @@ namespace Live2D.Cubism.Rendering
                 RefreshSortZ(_controller.DepthOffset);
             }
 
-            // Baked indices: per drawable local indices offset by its base vertex.
+            // drawable local index에 각 drawable의 base vertex를 더해 하나의 mesh 인덱스로 굽습니다.
             _maskIndexCount = ComputeMaskIndexCount();
             var indexBufferCapacity = _maskIndexCount + _totalIndexCount;
 
@@ -741,7 +649,7 @@ namespace Live2D.Cubism.Rendering
                 }
             }
 
-            // Mesh.
+            // 합쳐진 정점·인덱스로 GPU mesh를 생성합니다.
             _mesh = new Mesh
             {
                 name = model.name + " (Batched)",
@@ -759,16 +667,15 @@ namespace Live2D.Cubism.Rendering
 
             _mesh.SetIndexBufferParams(indexBufferCapacity, _use32BitIndices ? IndexFormat.UInt32 : IndexFormat.UInt16);
 
-            // Static uploads.
+            // 변하지 않는 정점 stream과 submesh descriptor를 GPU에 올립니다.
             _mesh.SetVertexBufferData(_uvs, 0, 0, _totalVertexCount, 2, CubismBatchedRendering.UpdateFlags);
 
-            // Model-wide bounds; batched draws use CommandBuffer.DrawMesh which does
-            // not cull, so these just need to be sane.
+            // 배치 draw는 CommandBuffer.DrawMesh로 culling하지 않으므로 모델 전체 bounds는 유효한 값이면 충분합니다.
             var canvas = model.CanvasInformation;
             var size = new Vector3(canvas.CanvasWidth / canvas.PixelsPerUnit, canvas.CanvasHeight / canvas.PixelsPerUnit, 1.0f);
             _mesh.bounds = new Bounds(Vector3.zero, size * 2.0f);
 
-            // Mask atlas + static mask index region + sections.
+            // mask atlas·정적 mask index 영역·texture별 mask section을 만듭니다.
             BuildMaskSections();
 
             _modelProperties = new MaterialPropertyBlock();
@@ -779,6 +686,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
+        /// 입력: drawables(CubismDrawable[]); 반환: 없음.
         private void BuildMaskGroups(CubismDrawable[] drawables)
         {
             var groupByKey = new Dictionary<string, int>();
@@ -805,8 +713,7 @@ namespace Live2D.Cubism.Rendering
                     var masks = drawable.Masks;
                     var maskIndices = new int[masks.Length];
 
-                    // Bind-pose extent of the mask geometry; drives the tile size so
-                    // large clip regions get more atlas resolution than small ones.
+                    // bind pose mask 크기로 tile 크기를 정해 큰 clip 영역에는 더 높은 atlas 해상도를 배정합니다.
                     var min = new Vector2(float.MaxValue, float.MaxValue);
                     var max = new Vector2(float.MinValue, float.MinValue);
 
@@ -826,7 +733,7 @@ namespace Live2D.Cubism.Rendering
                         }
                     }
 
-                    group = members.Count + 1; // Slot 0 is the "not masked" sentinel.
+                    group = members.Count + 1; // 0번 슬롯은 마스크를 쓰지 않는 drawable을 나타내므로 그룹은 1부터 시작합니다.
                     groupByKey.Add(key, group);
                     members.Add(maskIndices);
                     extents.Add(min.x <= max.x ? Mathf.Max(max.x - min.x, max.y - min.y) : 0.0f);
@@ -841,8 +748,7 @@ namespace Live2D.Cubism.Rendering
             _maskTiles = new Vector4[MaxMaskGroups];
             _maskTransforms = new Vector4[MaxMaskGroups];
 
-            // Sentinel: zero channel weights and invert=1 in the vertex data produce
-            // a mask factor of exactly 1 for unmasked drawables.
+            // 채널 가중치 0과 invert 1은 shader mask factor를 정확히 1로 만들어 unmasked drawable을 표시합니다.
             _maskTiles[0] = new Vector4(-1.0f, 0.0f, 0.0f, 1.0f);
             _maskTransforms[0] = new Vector4(0.0f, 0.0f, 1.0f, 0.0f);
 
@@ -858,10 +764,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Uniform square grid layout (legacy scheme): 4 channels per tile, all tiles
-        /// the same size. Kept as the fallback when extent-based packing bails out.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void LayoutMaskTilesUniform()
         {
             var tileCount = (_maskGroupCount + 3) / 4;
@@ -880,19 +783,12 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Extent-aware tile layout: groups are ranked by mask size, packed four per
-        /// tile, and tiles get power-of-two sizes proportional to their largest
-        /// member so big clip regions keep more atlas resolution. The tile vector
-        /// stores fractional column/row units, which the existing shader math
-        /// (<c>bound = tile.yz * tile.w</c>) already supports. Returns false when the
-        /// layout does not verifiably fit; the caller then uses the uniform grid.
-        /// </summary>
+        /// 입력: extents(List<float>); 반환: bool.
         private bool TryLayoutMaskTilesByExtent(List<float> extents)
         {
             var tileCount = (_maskGroupCount + 3) / 4;
 
-            // Rank groups by extent (descending, stable on group index).
+            // mask 그룹을 크기 내림차순·그룹 index 안정 순서로 정렬합니다.
             var ranked = new int[_maskGroupCount];
             for (var i = 0; i < _maskGroupCount; i++) { ranked[i] = i; }
             System.Array.Sort(ranked, (a, b) =>
@@ -907,10 +803,7 @@ namespace Live2D.Cubism.Rendering
                 return false;
             }
 
-            // Power-of-two tile sizes, extent-proportional, clamped to [1/4, cap].
-            // The floor matters: sharp small clip regions (hair strands, eyes) alias
-            // visibly below ~256px tiles, and 16 quarter-tiles still cover the full
-            // 64-group budget (16 x 1/16 area = 1), so no layout ever needs less.
+            // 크기에 비례한 2의 거듭제곱 tile을 [1/4, cap]으로 제한합니다. 작은 머리카락·눈 mask가 aliasing되지 않도록 최소 1/4 tile을 보장합니다.
             const float minTileSize = 0.25f;
             var cap = tileCount == 1 ? 1.0f : 0.5f;
             var sizes = new float[tileCount];
@@ -928,7 +821,7 @@ namespace Live2D.Cubism.Rendering
                 totalArea += size * size;
             }
 
-            // Shrink from the smallest tiles up until everything fits the unit square.
+            // 모든 tile이 단위 정사각형에 들어갈 때까지 가장 작은 tile부터 줄입니다.
             var guard = 256;
             while (totalArea > 1.0f + 1e-6f && guard-- > 0)
             {
@@ -953,15 +846,15 @@ namespace Live2D.Cubism.Rendering
                 return false;
             }
 
-            // Quadtree placement, largest tile first (sizes are descending already).
-            var freeNodes = new List<Vector3>(64) { new Vector3(0.0f, 0.0f, 1.0f) }; // (x, y, size)
+            // 이미 큰 순서인 tile을 quadtree에 큰 것부터 배치합니다.
+            var freeNodes = new List<Vector3>(64) { new Vector3(0.0f, 0.0f, 1.0f) }; // 각 원소는 빈 영역의 x, y 시작점과 정사각형 크기를 보관합니다.
             var placements = new Vector2[tileCount];
 
             for (var t = 0; t < tileCount; t++)
             {
                 var size = sizes[t];
 
-                // Best-fit: smallest free node that still holds the tile.
+                // tile을 담을 수 있는 빈 node 중 가장 작은 것을 골라 공간 낭비를 줄입니다.
                 var best = -1;
                 for (var n = 0; n < freeNodes.Count; n++)
                 {
@@ -978,7 +871,7 @@ namespace Live2D.Cubism.Rendering
                 var node = freeNodes[best];
                 freeNodes.RemoveAt(best);
 
-                // Split the node down to the requested size, keeping the quarters.
+                // 선택 node를 요청 tile 크기까지 4분할하며 남은 quarter를 빈 공간으로 유지합니다.
                 while (node.z > size + 1e-6f)
                 {
                     var half = node.z * 0.5f;
@@ -991,7 +884,7 @@ namespace Live2D.Cubism.Rendering
                 placements[t] = new Vector2(node.x, node.y);
             }
 
-            // Emit tile vectors: fractional column/row in units of the tile size.
+            // tile 크기 단위의 분수 column·row를 shader용 tile vector로 기록합니다.
             for (var r = 0; r < _maskGroupCount; r++)
             {
                 var t = r / 4;
@@ -1010,6 +903,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
+        /// 입력: 없음; 반환: int.
         private int ComputeMaskIndexCount()
         {
             var total = 0;
@@ -1027,11 +921,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Builds mask atlas render texture, the static mask index region at the start
-        /// of the index buffer, and the per-section materials/property blocks.
-        /// Idempotent; re-run after texture changes to re-split sections.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void BuildMaskSections()
         {
             _maskSections.Clear();
@@ -1055,9 +945,8 @@ namespace Live2D.Cubism.Rendering
                     autoGenerateMips = false
                 };
 
-                // Allocation can fail on a memory-starved device. Without this the
-                // renderer would keep recording mask draws into a texture that was
-                // never created, every frame, with no path back.
+                // 메모리가 부족한 기기에서는 할당이 실패할 수 있습니다. 이 처리가 없으면
+                // 생성되지 않은 텍스처에 매 프레임 마스크를 기록하며 빠져나올 길이 없습니다.
                 if (!_maskAtlas.Create())
                 {
                     Debug.LogWarning("[CubismBatchedModelRenderer] Mask atlas allocation failed, falling back to legacy rendering.");
@@ -1078,7 +967,7 @@ namespace Live2D.Cubism.Rendering
             {
                 var groupMembers = _maskGroupMembers[group];
 
-                // Split group members into sections by (texture, cull).
+                // 같은 mask 그룹 안의 drawable을 texture·cull 조합별 section으로 나눕니다.
                 var sectionOf = new Dictionary<long, int>();
                 var sectionMembers = new List<List<int>>();
                 var sectionTexture = new List<Texture>();
@@ -1132,7 +1021,7 @@ namespace Live2D.Cubism.Rendering
                 }
             }
 
-            // Upload the static mask index region.
+            // 변하지 않는 mask index 영역을 GPU index buffer에 업로드합니다.
             if (_use32BitIndices)
             {
                 _mesh.SetIndexBufferData(_indexBuffer32, 0, 0, _maskIndexCount, CubismBatchedRendering.UpdateFlags);
@@ -1142,12 +1031,13 @@ namespace Live2D.Cubism.Rendering
                 _mesh.SetIndexBufferData(_indexBuffer16, 0, 0, _maskIndexCount, CubismBatchedRendering.UpdateFlags);
             }
 
-            // New sections invalidate whatever the atlas currently holds.
+            // 새 section 구성은 기존 atlas 내용과 맞지 않으므로 다시 그리게 표시합니다.
             _maskContentDirty = true;
             _maskAtlasContentValid = false;
         }
 
 
+        /// 입력: drawableIndex(int), cursor(ref int); 반환: 없음.
         private void CopyBakedIndices(int drawableIndex, ref int cursor)
         {
             var count = _indexCount[drawableIndex];
@@ -1166,6 +1056,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
+        /// 입력: indexStart(int), indexCount(int); 반환: SubMeshDescriptor.
         private SubMeshDescriptor MakeSubMeshDescriptor(int indexStart, int indexCount)
         {
             return new SubMeshDescriptor(indexStart, indexCount)
@@ -1177,10 +1068,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Builds the distinct texture table, texture slots per drawable, and the
-        /// optional texture array (all textures sharing size/format/mips).
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void BuildTextures()
         {
             var distinct = new List<Texture>(8);
@@ -1212,15 +1100,14 @@ namespace Live2D.Cubism.Rendering
                 }
                 else
                 {
-                    // Sources may still be mid async-upload; copying now would freeze
-                    // placeholder content into the array. Batch per texture until the
-                    // settle window passes (FlushMeshData retries).
+                    // source texture가 비동기 업로드 중이면 지금 복사한 placeholder가 array에 고정되므로, settle window 뒤 재시도합니다.
                     _textureArrayPending = true;
                 }
             }
         }
 
 
+        /// 입력: 없음; 반환: 없음.
         private void TryBuildTextureArray()
         {
             var first = _textures[0] as Texture2D;
@@ -1256,15 +1143,7 @@ namespace Live2D.Cubism.Rendering
                     filterMode = first.filterMode,
                     wrapMode = first.wrapMode,
                     anisoLevel = first.anisoLevel,
-                    // Root cause of the gray-avatar-on-scene-transition bug: the shader
-                    // reads _MainTexArray through a keyword-gated HLSL declaration, not a
-                    // Properties-block entry, so Resources.UnloadUnusedAssets (auto-run on
-                    // every non-additive scene load) does not see the material->array
-                    // reference and releases this runtime array. Its material binding then
-                    // reads null and the model renders as a flat gray silhouette; unlike an
-                    // imported texture the array has no disk backing to reload from. The
-                    // DontUnloadUnusedAsset flag (part of HideAndDontSave, matching the
-                    // batched materials) keeps it resident.
+                    // _MainTexArray는 keyword HLSL 선언으로만 참조되어 scene load의 UnloadUnusedAssets가 material 연결을 못 보고 해제할 수 있습니다. disk backing 없는 runtime array가 null이면 아바타가 회색으로 렌더되므로 HideAndDontSave의 DontUnloadUnusedAsset로 상주시킵니다.
                     hideFlags = HideFlags.HideAndDontSave
                 };
 
@@ -1297,19 +1176,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Re-copies the source textures into the existing texture array. A runtime
-        /// <see cref="Texture2DArray"/> filled by <see cref="Graphics.CopyTexture"/>
-        /// has no CPU-side backing, so if the GPU discards its contents — memory
-        /// pressure during a scene transition, graphics-context loss on app focus
-        /// change — it reads back as flat gray with no source to restore it (the
-        /// avatar renders as a shapeless silhouette). Per-texture batching and the
-        /// legacy path bind Unity-managed textures instead and never hit this.
-        /// Refreshing on resume, the point every show-transition passes through,
-        /// repopulates the array from the still-resident sources. GPU-to-GPU and
-        /// off the per-frame path, so it runs unconditionally rather than trying to
-        /// detect the loss.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void RefreshTextureArrayContent()
         {
             if (!_useTextureArray || _textures == null)
@@ -1317,9 +1184,7 @@ namespace Live2D.Cubism.Rendering
                 return;
             }
 
-            // The array object itself was released (context loss, or a stray unload
-            // before the hideFlags guard took effect): rebuild the whole texture
-            // state — array plus the materials bound to it — on the next flush.
+            // graphics context 유실이나 guard 전 unload로 texture array 객체가 사라졌으면 다음 flush에서 array와 연결 재질을 함께 다시 만듭니다.
             if (_textureArray == null)
             {
                 _texturesDirty = true;
@@ -1340,14 +1205,13 @@ namespace Live2D.Cubism.Rendering
             }
             catch (Exception e)
             {
-                // Source shape changed unexpectedly; force a full texture rebuild.
+                // source texture의 크기·형식이 달라지면 slice 호환성이 없으므로 전체 texture 상태를 다시 만듭니다.
                 Debug.LogWarning($"[CubismBatchedModelRenderer] Texture array refresh failed, rebuilding: {e.Message}");
                 _texturesDirty = true;
                 return;
             }
 
-            // Re-assert the binding: a cached material may still point at a replaced
-            // (now destroyed) array, which the shader samples as flat gray.
+            // 캐시 재질이 교체·파괴된 array를 계속 가리킬 수 있으므로 현재 array binding을 다시 기록해 회색 렌더를 막습니다.
             foreach (var material in _materials.Values)
             {
                 if (material != null && material.IsKeywordEnabled("CUBISM_TEXTURE_ARRAY"))
@@ -1358,11 +1222,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Re-populates GPU-only resources after a suspected graphics-context loss
-        /// (e.g. app focus regained on mobile). Safe to call any time; a no-op
-        /// unless a runtime texture array is in use.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         public void RefreshVolatileGpuResources()
         {
             if (!IsValid)
@@ -1372,13 +1232,13 @@ namespace Live2D.Cubism.Rendering
 
             RefreshTextureArrayContent();
 
-            // The mask atlas is persistent and only re-rendered when dirty; after a
-            // suspected context loss its contents cannot be trusted anymore.
+            // mask atlas는 dirty일 때만 다시 그리지만 context 유실 뒤 내용은 신뢰할 수 없으므로 갱신 대상으로 표시합니다.
             _maskContentDirty = true;
             _maskAtlasContentValid = false;
         }
 
 
+        /// 입력: textureSlot(int), colorBlend(BlendTypes.ColorBlend), isDoubleSided(bool); 반환: Material.
         private Material GetBatchMaterial(int textureSlot, BlendTypes.ColorBlend colorBlend, bool isDoubleSided)
         {
             var key = ((long)(_useTextureArray ? 0 : textureSlot) << 8)
@@ -1388,12 +1248,7 @@ namespace Live2D.Cubism.Rendering
 
             if (_materials.TryGetValue(key, out var material) && material != null)
             {
-                // Re-assert the array binding every time the cached material is served
-                // for drawing. The proven cause of the gray-avatar bug is this binding
-                // reading null at draw time while the array object is alive; the shader
-                // then samples an unbound array and the model renders flat gray. Setting
-                // it here (a cheap reference assign) guarantees a valid binding at the
-                // draw regardless of what cleared it between frames.
+                // cached 재질을 draw에 쓸 때마다 texture array binding을 다시 기록합니다. 객체가 살아 있어도 binding이 null이면 shader가 회색을 sample하므로 frame 사이 누가 지웠어도 유효한 참조를 보장합니다.
                 if (_useTextureArray && _textureArray != null)
                 {
                     material.SetTexture(MainTextureArrayId, _textureArray);
@@ -1452,11 +1307,7 @@ namespace Live2D.Cubism.Rendering
 
         #region Per-Frame Update (main thread, from OnDynamicDrawableData)
 
-        /// <summary>
-        /// Consumes new dynamic data from the core. Runs on the main thread inside
-        /// <see cref="CubismModel.OnDynamicDrawableData"/>, i.e. while the core task
-        /// is guaranteed idle.
-        /// </summary>
+        /// 입력: data(CubismDynamicDrawableData[]); 반환: 없음.
         public unsafe void ConsumeDynamicData(CubismDynamicDrawableData[] data)
         {
             if (!IsValid || data == null || data.Length != _drawableCount)
@@ -1467,9 +1318,8 @@ namespace Live2D.Cubism.Rendering
             var fullRefresh = !_receivedFirstData;
             _receivedFirstData = true;
 
-            // From here on the vertices come from the drawables, so the core can stop
-            // filling the managed mirror. Re-asserted every event: the array identity
-            // changes when the model is rebuilt.
+            // 이제부터 정점은 Drawable에서 오므로 코어는 관리 사본을 채울 필요가 없습니다.
+            // 모델을 다시 만들면 배열 인스턴스가 바뀌므로 이벤트마다 다시 확정합니다.
             SuppressManagedVertexCopy(data);
 
             var orderDirty = false;
@@ -1483,14 +1333,10 @@ namespace Live2D.Cubism.Rendering
             {
                 var drawableData = data[i];
 
-                // Positions must only be pulled when flagged dirty: the core skips
-                // copying vertex data of non-dirty drawables into the dynamic buffers,
-                // so those arrays stay zero. Initial values come from Build().
-                // The read goes straight from the drawable into the vertex stream,
-                // skipping the managed mirror and preserving the sort depth already in
-                // z, and it reports whether anything actually moved. The core raises
-                // the flag whenever it re-evaluated a drawable, which is not the same
-                // as the drawable having changed shape.
+                // core는 dirty drawable만 dynamic 정점을 채우므로 dirty일 때만 읽고, 나머지는 Build의 초기 정점을 유지해야 0 좌표를 덮어쓰지 않습니다.
+                // Drawable에서 정점 스트림으로 바로 읽어 관리 사본을 건너뛰고, z에 든 정렬 깊이를 보존하며,
+                // 실제로 움직였는지도 함께 받습니다. 코어는 재평가한 Drawable에 더티를 세우지
+                // 모양이 바뀌었을 때 세우는 게 아닙니다.
                 if (drawableData.AreVertexPositionsDirty)
                 {
                     var drawable = _drawablesByIndex[i];
@@ -1502,10 +1348,8 @@ namespace Live2D.Cubism.Rendering
                     {
                         var read = drawable.ReadVertexPositionsInto(positions + baseVertex, count, out changed, out var extentMinimum, out var extentMaximum);
 
-                        // A shape mismatch means the model changed underneath us. Going
-                        // quiet here would leave the mesh frozen at the last good pose,
-                        // so invalidate instead and let the controller fall back and
-                        // rebuild the way it does for any other mid-flight invalidation.
+                        // 모양이 어긋나면 모델이 바뀐 것입니다. 조용히 넘기면 mesh가 마지막 포즈로 얼어붙으므로,
+                        // 다른 중도 무효화와 같은 방식으로 무효 처리해 컨트롤러가 폴백·재빌드하게 합니다.
                         if (read != count)
                         {
                             _isBroken = true;
@@ -1525,7 +1369,7 @@ namespace Live2D.Cubism.Rendering
                     {
                         MarkPositionsDirty(baseVertex, count);
 
-                        // A moved mask mesh invalidates the cached atlas contents.
+                        // mask mesh가 움직이면 기존 atlas mask 그림이 맞지 않으므로 다시 그리게 표시합니다.
                         if (_isMaskGroupMember[i])
                         {
                             _maskContentDirty = true;
@@ -1542,13 +1386,7 @@ namespace Live2D.Cubism.Rendering
                     }
                 }
 
-                // Visibility is consumed value-driven, not flag-driven: IsVisible is an
-                // absolute per-update snapshot, and relying on the one-shot
-                // VisibilityDidChange flag latches a stale state forever if a single
-                // event is missed (e.g. raised while the controller was disabled and
-                // unsubscribed) — a pose-hidden arm then never comes back. The legacy
-                // path re-derives its skip state from current values every frame;
-                // mirror that robustness. The compare keeps the rebuild cost gated.
+                // visibility는 one-shot event가 아닌 매 update의 절대 IsVisible 값으로 반영합니다. 비활성화 중 event를 놓쳐 pose가 숨긴 파츠가 계속 사라지는 문제를 피하고, 비교로 재구성 비용만 제한합니다.
                 {
                     var isVisible = drawableData.IsVisible;
                     var visibleChanged = _visible[i] != isVisible;
@@ -1561,8 +1399,7 @@ namespace Live2D.Cubism.Rendering
 
                     if (visibleChanged || fullRefresh)
                     {
-                        // Keep the (mesh-less) MeshRenderer's enabled flag in sync;
-                        // raycasting and user code use it as the visibility signal.
+                        // mesh 없는 MeshRenderer도 raycast·사용자 코드의 가시성 신호이므로 enabled 값을 현재 visibility와 동기화합니다.
                         var renderer = _renderersByDrawable[i];
                         if (renderer != null && renderer.MeshRenderer.enabled != isVisible)
                         {
@@ -1571,7 +1408,7 @@ namespace Live2D.Cubism.Rendering
                     }
                 }
 
-                // Opacity gets the same value-driven fallback for the same reason.
+                // opacity도 누락된 one-shot event에 의존하지 않도록 현재 절대값으로 동기화합니다.
                 if (fullRefresh || drawableData.IsOpacityDirty || _opacities[i] != drawableData.Opacity)
                 {
                     _opacities[i] = drawableData.Opacity;
@@ -1600,10 +1437,8 @@ namespace Live2D.Cubism.Rendering
                 _indicesDirty = true;
             }
 
-            // Sort depth is no longer rewritten per dirty drawable every frame: the
-            // per-drawable read preserves z. Refresh it when the render order changes,
-            // when the depth configuration changes, or when leaving z sorting (which
-            // has to flatten the stream back to zero).
+            // 정렬 깊이를 더는 매 프레임 dirty drawable마다 다시 쓰지 않습니다. Drawable 직접 읽기가 z를 보존합니다.
+            // 렌더 순서가 바뀌거나, 깊이 설정이 바뀌거나, z 정렬을 벗어날 때(스트림을 0으로 되돌려야 함)만 갱신합니다.
             var sortZConfigurationChanged = applySortZ != _appliedSortZ
                 || (applySortZ && !Mathf.Approximately(depthOffset, _appliedDepthOffset));
 
@@ -1614,17 +1449,13 @@ namespace Live2D.Cubism.Rendering
                 _appliedSortZ = applySortZ;
                 _appliedDepthOffset = depthOffset;
 
-                // The model extent pads z by the sort-depth range.
+                // 모델 AABB가 정렬 깊이만큼 z를 넓히므로 다시 계산해야 합니다.
                 _localModelBoundsDirty = true;
             }
         }
 
 
-        /// <summary>
-        /// Tells the core to stop mirroring vertex positions into managed arrays for
-        /// this model, and remembers the array so the suppression can be lifted when
-        /// this renderer stops owning the model.
-        /// </summary>
+        /// 이 모델의 정점 관리 사본 생성을 코어에서 멈추게 하고, 나중에 억제를 풀 수 있도록 배열을 기억합니다.
         private void SuppressManagedVertexCopy(CubismDynamicDrawableData[] data)
         {
             if (ReferenceEquals(_suppressedDynamicData, data))
@@ -1643,11 +1474,8 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Restores the core's managed vertex mirror. Must run whenever the legacy
-        /// per-drawable renderers may draw again, otherwise they would keep rendering
-        /// whatever geometry was last written before the suppression started.
-        /// </summary>
+        /// 코어의 정점 관리 사본을 되살립니다. legacy 개별 렌더러가 다시 그릴 수 있는 시점마다 반드시 호출해야
+        /// 억제 직전 기하로 얼어붙지 않습니다.
         internal void ReleaseManagedVertexCopySuppression()
         {
             var data = _suppressedDynamicData;
@@ -1666,6 +1494,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
+        /// 입력: depthOffset(float); 반환: 없음.
         private unsafe void RefreshSortZ(float depthOffset)
         {
             var positions = (Vector3*)_positions.GetUnsafePtr();
@@ -1686,9 +1515,10 @@ namespace Live2D.Cubism.Rendering
         }
 
 
+        /// 입력: 없음; 반환: 없음.
         private void RebuildOrder()
         {
-            // Render orders form a permutation of [0, drawableCount).
+            // 정상 render order는 [0, drawableCount) 범위의 순열입니다.
             var isPermutation = true;
 
             for (var i = 0; i < _drawableCount; i++)
@@ -1714,7 +1544,7 @@ namespace Live2D.Cubism.Rendering
                 return;
             }
 
-            // Defensive fallback: stable sort by render order.
+            // native 순열이 깨진 경우에도 일관된 draw를 위해 render order 안정 정렬로 복구합니다.
             for (var i = 0; i < _drawableCount; i++)
             {
                 _orderedDrawables[i] = i;
@@ -1725,6 +1555,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
+        /// 입력: a(int), b(int); 반환: int.
         private int CompareByRenderOrder(int a, int b)
         {
             var byOrder = _renderOrders[a].CompareTo(_renderOrders[b]);
@@ -1732,9 +1563,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Recomputes the stream-1 row (tint/opacity, multiply, screen, mask attrs) of one drawable.
-        /// </summary>
+        /// 입력: drawableIndex(int); 반환: 없음.
         public void RecomputeColorRow(int drawableIndex)
         {
             if (_isDisposed || _isBroken)
@@ -1773,7 +1602,7 @@ namespace Live2D.Cubism.Rendering
                     (byte)Mathf.Clamp(Mathf.RoundToInt(screen.r * 255.0f), 0, 255),
                     (byte)Mathf.Clamp(Mathf.RoundToInt(screen.g * 255.0f), 0, 255),
                     (byte)Mathf.Clamp(Mathf.RoundToInt(screen.b * 255.0f), 0, 255),
-                    // Unmasked sentinel needs invert=1 so the mask factor is 1.
+                    // unmasked sentinel은 mask factor가 1이 되도록 invert를 1로 기록합니다.
                     (byte)(_maskGroup[drawableIndex] == 0 ? 255 : (_isInverted[drawableIndex] ? 255 : 0)))
             };
 
@@ -1789,9 +1618,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Recomputes the stream-1 row for a renderer (hook target for color changes).
-        /// </summary>
+        /// 입력: renderer(CubismRenderer); 반환: 없음.
         public void MarkColorDirty(CubismRenderer renderer)
         {
             if (renderer == null || renderer.Drawable == null)
@@ -1803,14 +1630,12 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Requests a texture table + material + batch rebuild (hook target for texture changes).
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         public void MarkTexturesDirty()
         {
             _texturesDirty = true;
 
-            // New texture content may upload asynchronously; re-arm the settle window.
+            // 새 texture 내용은 비동기 업로드될 수 있으므로 settle window를 다시 시작합니다.
             _textureArrayActivationTime = Time.realtimeSinceStartup
                 + CubismBatchedRendering.TextureArrayActivationDelaySeconds;
         }
@@ -1820,9 +1645,7 @@ namespace Live2D.Cubism.Rendering
 
         #region Rendering (main thread, from the URP render pass)
 
-        /// <summary>
-        /// Uploads dirty CPU buffers into the mesh. Called once per frame before recording draws.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         public void FlushMeshData()
         {
             if (!IsValid)
@@ -1832,8 +1655,7 @@ namespace Live2D.Cubism.Rendering
 
             if (_textureArrayPending && Time.realtimeSinceStartup >= _textureArrayActivationTime)
             {
-                // Upload settle window passed: rebuild through the regular texture
-                // flow, which re-bakes uv slices and batch keys for the array.
+                // settle window가 끝나면 일반 texture 재구성 경로로 array의 UV slice와 batch key를 다시 굽습니다.
                 _textureArrayPending = false;
                 _texturesDirty = true;
             }
@@ -1886,9 +1708,10 @@ namespace Live2D.Cubism.Rendering
         }
 
 
+        /// 입력: 없음; 반환: 없음.
         private void RebuildTexturesAndUvs()
         {
-            // Release materials bound to the old texture set.
+            // 이전 texture set을 참조하는 재질을 해제해 GPU 참조가 남지 않게 합니다.
             foreach (var material in _materials.Values)
             {
                 if (material != null)
@@ -1906,7 +1729,7 @@ namespace Live2D.Cubism.Rendering
 
             BuildTextures();
 
-            // Refresh texture slices in the static uv stream.
+            // 정적 UV stream의 texture slice 인덱스를 새 array 구성에 맞춰 갱신합니다.
             for (var i = 0; i < _drawableCount; i++)
             {
                 var slice = _useTextureArray ? _textureSlot[i] : 0;
@@ -1923,11 +1746,12 @@ namespace Live2D.Cubism.Rendering
 
             _mesh.SetVertexBufferData(_uvs, 0, 0, _totalVertexCount, 2, CubismBatchedRendering.UpdateFlags);
 
-            // Mask sections split by texture, so their layout may have changed too.
+            // mask section도 texture별로 나뉘므로 texture 변경 뒤 layout을 다시 계산합니다.
             BuildMaskSections();
         }
 
 
+        /// 입력: 없음; 반환: 없음.
         private void RebuildBatches()
         {
             _batches.Clear();
@@ -1995,7 +1819,7 @@ namespace Live2D.Cubism.Rendering
 
             _mainIndexCount = cursor - _maskIndexCount;
 
-            // Upload the rebuilt main region.
+            // 다시 만든 일반 draw index 영역을 GPU mesh에 업로드합니다.
             if (_mainIndexCount > 0)
             {
                 if (_use32BitIndices)
@@ -2008,9 +1832,7 @@ namespace Live2D.Cubism.Rendering
                 }
             }
 
-            // Apply the whole submesh table (mask sections first, then batches) in a
-            // single call; growing subMeshCount incrementally spams Unity's invalid
-            // AABB conversion warning for the transiently-default descriptors.
+            // mask section 뒤 batch 순서의 전체 submesh 표를 한 번에 적용해, 중간 기본 descriptor 때문에 Unity 경고가 반복되는 것을 막습니다.
             _subMeshScratch.Clear();
             _subMeshScratch.AddRange(_maskSubMeshes);
 
@@ -2023,9 +1845,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Records the mask atlas pass. Call before the main render target is set.
-        /// </summary>
+        /// 입력: buffer(CommandBuffer); 반환: 없음.
         public void RecordMaskPass(CommandBuffer buffer)
         {
             if (!IsValid || _maskSections.Count < 1)
@@ -2033,16 +1853,13 @@ namespace Live2D.Cubism.Rendering
                 return;
             }
 
-            // A fully transparent model draws nothing; keep pending mask updates
-            // dirty so the atlas refreshes when the model reappears.
+            // 완전히 투명한 모델은 draw하지 않되, 다시 나타날 때 atlas를 갱신할 수 있도록 대기 mask update는 dirty로 남깁니다.
             if (_controller.Opacity <= 0.0f)
             {
                 return;
             }
 
-            // The atlas is persistent, so skip the re-render when no mask mesh moved
-            // and the contents are still trustworthy. A recreated RT (graphics
-            // context loss) comes back blank and must always be re-rendered.
+            // atlas는 상주하므로 mask mesh가 안 움직이고 내용이 유효하면 재렌더를 건너뜁니다. context 유실로 다시 만든 RT는 비어 있으므로 항상 다시 그립니다.
             if (_maskAtlas == null || !_maskAtlas.IsCreated())
             {
                 _maskAtlasContentValid = false;
@@ -2058,8 +1875,7 @@ namespace Live2D.Cubism.Rendering
 
             UpdateMaskTransforms();
 
-            // DontCare: the previous contents are fully replaced, so tilers need not
-            // load the old atlas into tile memory.
+            // 이전 atlas 내용은 완전히 덮어쓰므로 DontCare로 지정해 tiler가 이전 tile 메모리를 읽지 않게 합니다.
             buffer.SetRenderTarget(_maskAtlas, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store);
             buffer.ClearRenderTarget(false, true, Color.clear);
 
@@ -2080,6 +1896,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
+        /// 입력: 없음; 반환: 없음.
         private unsafe void UpdateMaskTransforms()
         {
             if (_lastMaskUpdateFrame == Time.frameCount)
@@ -2130,9 +1947,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Records main draws for all batches. The caller must have set the render target.
-        /// </summary>
+        /// 입력: buffer(CommandBuffer); 반환: 없음.
         public void RecordMainDraws(CommandBuffer buffer)
         {
             if (!IsValid || _batches.Count < 1)
@@ -2142,25 +1957,19 @@ namespace Live2D.Cubism.Rendering
 
             var modelOpacity = Mathf.Clamp01(_controller.Opacity);
 
-            // Fully transparent output is a no-op under every supported blend mode;
-            // skip the draws (and their bandwidth) entirely.
+            // 완전 투명 출력은 모든 지원 blend mode에서 결과가 없으므로 draw와 대역폭 사용을 모두 건너뜁니다.
             if (modelOpacity <= 0.0f)
             {
                 return;
             }
 
-            // Object-to-world must include ancestors: the model lives under a placement rig
-            // (AvatarRig owns position/scale), so local TRS renders at origin/scale 1.
+            // object-to-world는 부모 rig를 포함해야 합니다. AvatarRig가 위치·scale을 소유하므로 local TRS만 쓰면 원점·1배로 렌더됩니다.
             var matrix = _controller.transform.localToWorldMatrix;
 
             _modelProperties.SetFloat(ModelOpacityId, modelOpacity);
             _modelProperties.SetTexture(MaskTextureId, _maskAtlas != null ? (Texture)_maskAtlas : Texture2D.whiteTexture);
 
-            // Mask parameter arrays go through command-buffer globals instead of the
-            // property block: DrawMesh snapshots the entire block per call, so 2 KB of
-            // arrays would be captured once per batch. Globals are recorded once per
-            // model here; commands execute in order, so interleaved models each see
-            // their own values.
+            // mask parameter 배열은 property block 대신 command-buffer global로 한 모델당 한 번 기록합니다. DrawMesh가 batch마다 block 전체를 복사하는 비용을 피하면서 command 순서로 모델별 값을 유지합니다.
             buffer.SetGlobalVectorArray(MaskTilesArrayId, _maskTiles);
             buffer.SetGlobalVectorArray(MaskTransformsArrayId, _maskTransforms);
 
@@ -2184,16 +1993,7 @@ namespace Live2D.Cubism.Rendering
 
         #region Disposal
 
-        /// <summary>
-        /// Refreshes all dynamic state from the model after the controller was
-        /// disabled and re-enabled (e.g. avatar power management toggling the
-        /// render controller on screen changes). Keeps the expensive GPU/native
-        /// resources alive so the resume is stutter-free; only CPU-side state and
-        /// the next frame's uploads are refreshed. The core does not run while the
-        /// controller is disabled in the supported flows, but dirty flags emitted
-        /// during the gap are lost, so everything is re-read defensively.
-        /// </summary>
-        /// <returns>False when the renderer no longer matches the model and must be rebuilt.</returns>
+        /// 입력: 없음; 반환: bool.
         public unsafe bool ResumeAfterDisable()
         {
             if (!IsValid)
@@ -2224,11 +2024,7 @@ namespace Live2D.Cubism.Rendering
                     return false;
                 }
 
-                // Current pose (the core may have been updated while unsubscribed).
-                // Allocation-free read: this runs on every resume, and avatar
-                // power-management resumes on every screen transition — the
-                // allocating VertexPositions getter would produce hundreds of
-                // kilobytes of garbage per resume on large models.
+                // 구독이 끊긴 동안 core가 갱신했을 수 있으므로 현재 pose를 allocation 없이 읽습니다. 화면 전환마다 resume되므로 배열 getter의 큰 GC 할당을 피합니다.
                 var baseVertex = _vertexBase[unmanagedIndex];
 
                 if (drawable.ReadVertexPositionsInto(positions + baseVertex, _vertexCount[unmanagedIndex]) < 0)
@@ -2254,34 +2050,25 @@ namespace Live2D.Cubism.Rendering
             _lastFlushedFrame = -1;
             _lastMaskUpdateFrame = -1;
 
-            // The atlas contents may be stale or discarded after the gap.
+            // 비활성 구간 뒤 atlas 내용은 오래되었거나 버려졌을 수 있으므로 갱신 대상으로 표시합니다.
             _maskContentDirty = true;
             _maskAtlasContentValid = false;
 
-            // Dirty events raised while disabled (unsubscribed) are gone for good;
-            // treat the first event after resume as a full refresh so visibility,
-            // opacity, and order resync from their absolute snapshot values.
+            // 비활성·미구독 중 dirty event는 되돌아오지 않으므로 resume 뒤 첫 event를 전체 갱신으로 처리해 visibility·opacity·order를 절대값에서 동기화합니다.
             _receivedFirstData = false;
 
-            // The texture array is a detached GPU copy Unity cannot restore on its
-            // own; repopulate it in case its contents were discarded while hidden.
+            // texture array는 Unity가 스스로 복원할 수 없는 분리 GPU 복사본이므로 숨긴 동안 내용이 사라졌을 경우를 대비해 다시 채웁니다.
             RefreshTextureArrayContent();
 
             return true;
         }
 
 
-        /// <summary>
-        /// Pushes the batched path's dynamic state (visibility, render orders) back
-        /// onto the per-drawable renderers. Call before falling back to the legacy
-        /// path at runtime; the legacy event flow only propagates dirty changes, so
-        /// state that changed while batched would otherwise stay stale.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         public void RestoreLegacyRendererState()
         {
-            // The legacy renderers read the core's managed vertex mirror, so it has to
-            // be filled again before they draw. Do this even when the state push below
-            // bails out: leaving the mirror suppressed would freeze their geometry.
+            // legacy 렌더러는 코어의 정점 관리 사본을 읽으므로 그리기 전에 다시 채워져야 합니다.
+            // 아래 상태 push가 빠져나가더라도 억제는 반드시 풀어야 기하가 얼어붙지 않습니다.
             ReleaseManagedVertexCopySuppression();
 
             if (_isBroken || _renderersByDrawable == null)
@@ -2289,7 +2076,7 @@ namespace Live2D.Cubism.Rendering
                 return;
             }
 
-            // Skip during scene teardown; the renderers are being destroyed anyway.
+            // scene 정리 중에는 renderer도 곧 파괴되므로 GPU 상태를 복구하지 않습니다.
             if (_controller == null || !_controller.gameObject.scene.isLoaded)
             {
                 return;
@@ -2310,9 +2097,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Releases all GPU and native resources.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         public void Dispose()
         {
             if (_isDisposed)
@@ -2325,6 +2110,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
+        /// 입력: 없음; 반환: 없음.
         private void DisposeResources()
         {
             ReleaseManagedVertexCopySuppression();

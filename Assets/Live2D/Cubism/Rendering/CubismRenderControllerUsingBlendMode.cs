@@ -4,6 +4,7 @@
  * Use of this source code is governed by the Live2D Open Software license
  * that can be found at https://www.live2d.com/eula/live2d-open-software-license-agreement_en.html.
  */
+// Cubism 5.3 이후 Drawable·Offscreen 혼합 렌더의 정렬, 계층 frame buffer, draw 제출을 담당합니다.
 
 
 using Live2D.Cubism.Core;
@@ -18,32 +19,17 @@ using UnityEngine.Rendering;
 
 namespace Live2D.Cubism.Rendering
 {
-    /// <summary>
-    /// Partial class that describes processing related to the rendering method added in Cubism 5.3 and later.
-    /// </summary>
     public partial class CubismRenderController
     {
         #region Values
 
-        /// <summary>
-        /// Material property block for the model.
-        /// </summary>
         private MaterialPropertyBlock _properties;
 
-        /// <summary>
-        /// Whether the model has a root part offscreen.
-        /// </summary>
         internal bool HasRootPartOffscreen = true;
 
-        /// <summary>
-        /// <see cref="HasMask"/>'s backing field.
-        /// </summary>
         [SerializeField, HideInInspector]
         private bool _hasMask;
 
-        /// <summary>
-        /// Is the model using masks?
-        /// </summary>
         public bool HasMask
         {
             get
@@ -56,28 +42,15 @@ namespace Live2D.Cubism.Rendering
             }
         }
 
-        /// <summary>
-        /// Current frame buffer used for rendering.
-        /// Offscreen rendering uses this to render the model.
-        /// </summary>
         public RenderTexture CurrentFrameBuffer { get; set; }
 
-        /// <summary>
-        /// Index of the current offscreen owner in the unmanaged array.
-        /// </summary>
         public int CurrentOffscreenUnmanagedIndex { get; set; }
 
         #region Sorting
 
-        /// <summary>
-        /// <see cref="GroupedSortingIndex"/>'s backing field.
-        /// </summary>
         [SerializeField, HideInInspector]
         private int _groupedSortingIndex;
 
-        /// <summary>
-        /// Sorting index for grouped rendering.
-        /// </summary>
         public int GroupedSortingIndex
         {
             get
@@ -87,32 +60,23 @@ namespace Live2D.Cubism.Rendering
 
             set
             {
-                // Remove from the common rendering controller's groups.
+                // 이전 정렬 인덱스로 등록된 공용 render group에서 먼저 제거합니다.
                 CubismRenderControllerGroup.GetInstance().RemoveRenderControllerFromGroups(this, true);
 
                 _groupedSortingIndex = value;
 
-                // Re-add to the common rendering controller's groups.
+                // 새 정렬 인덱스를 기준으로 공용 render group에 다시 등록합니다.
                 CubismRenderControllerGroup.GetInstance().AddRenderControllerGroups(this);
             }
         }
 
-        /// <summary>
-        /// Whether the render order of the <see cref="CubismDrawable"/>s did change.
-        /// </summary>
         internal bool DidChangeDrawableRenderOrder;
 
-        /// <summary>
-        /// Whether the sorting order of the <see cref="CubismRenderer"/>s did change.
-        /// </summary>
         internal bool DidChangeSorting;
 
         [NonSerialized]
         private CubismRenderer[] _sortedRenderers;
 
-        /// <summary>
-        /// Sorted <see cref="Renderers"/>s for using <see cref="ICubismRenderingInterceptor"/>.
-        /// </summary>
         public CubismRenderer[] SortedRenderers
         {
             get
@@ -127,9 +91,7 @@ namespace Live2D.Cubism.Rendering
             private set { _sortedRenderers = value; }
         }
 
-        /// <summary>
-        /// Sorts the <see cref="Renderers"/> by their draw object render order.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void SortRenderers()
         {
             if (Renderers == null)
@@ -149,8 +111,7 @@ namespace Live2D.Cubism.Rendering
                         DrawableRenderers.Length + Renderers[i].Offscreen.UnmanagedIndex]);
             }
 
-            // Reuse the scratch list and result array; this runs on every sort-dirty
-            // frame and the per-call List + ToArray pair was steady-state garbage.
+            // sort dirty 프레임마다 실행되므로 작업 List와 결과 배열을 재사용해 지속적인 GC 할당을 막습니다.
             _sortScratch ??= new List<CubismRenderer>(Renderers.Length);
             _sortScratch.Clear();
             _sortScratch.AddRange(Renderers);
@@ -167,21 +128,13 @@ namespace Live2D.Cubism.Rendering
 
         private List<CubismRenderer> _sortScratch;
 
-        /// <summary>
-        /// Sorts the given renderers by their sorting order.
-        /// </summary>
-        /// <param name="renderers"> Renderers to sort. </param>
+        /// 입력: renderers(List<CubismRenderer>); 반환: 없음.
         private void SortBySortingOrder(List<CubismRenderer> renderers)
         {
             renderers.Sort(CompareBySortingOrder);
         }
 
-        /// <summary>
-        /// Compares two <see cref="CubismRenderer"/>s by their sorting order.
-        /// </summary>
-        /// <param name="a"> First renderer. </param>
-        /// <param name="b"> Second renderer. </param>
-        /// <returns></returns>
+        /// 입력: a(CubismRenderer), b(CubismRenderer); 반환: int.
         private int CompareBySortingOrder(CubismRenderer a, CubismRenderer b)
         {
             return a.MeshRenderer.sortingOrder - b.MeshRenderer.sortingOrder;
@@ -189,15 +142,9 @@ namespace Live2D.Cubism.Rendering
 
         #endregion
 
-        /// <summary>
-        /// <see cref="DrawableRenderers"/>'s backing field.
-        /// </summary>
         [NonSerialized]
         private CubismRenderer[] _drawableRenderers;
 
-        /// <summary>
-        /// Drawable <see cref="CubismRenderer"/>s.
-        /// </summary>
         public CubismRenderer[] DrawableRenderers
         {
             get
@@ -211,14 +158,8 @@ namespace Live2D.Cubism.Rendering
             private set { _drawableRenderers = value; }
         }
 
-        /// <summary>
-        /// <see cref="OffscreenRenderers"/>'s backing field.
-        /// </summary>
         private CubismRenderer[] _offscreenRenderers;
 
-        /// <summary>
-        /// Offscreen <see cref="CubismRenderer"/>s.
-        /// </summary>
         public CubismRenderer[] OffscreenRenderers
         {
             get
@@ -234,22 +175,19 @@ namespace Live2D.Cubism.Rendering
 
         #endregion
 
-        /// <summary>
-        /// Initializes the render controller.
-        /// </summary>
-        /// <param name="renderers">Array of renderers to initialize.</param>
+        /// 입력: renderers(CubismRenderer[]); 반환: 없음.
         private void TryInitializeRenderers(CubismRenderer[] renderers)
         {
-            // HACK: It doesn't work correctly when placed inside a function.
+            // 호출자가 넘긴 배열이 이미 채워졌으면 중복 component와 cache를 만들지 않습니다.
             if (renderers != null && renderers.Length != 0)
             {
                 return;
             }
 
-            // Initialize renderers.
+            // Drawable·Offscreen renderer를 합칠 빈 배열에서 초기화를 시작합니다.
             renderers = Array.Empty<CubismRenderer>();
 
-            // Create renders and apply it to backing field...
+            // 모든 Drawable에 renderer를 붙이고 종류와 원본 Drawable 참조를 연결합니다.
             var drawables = Model.Drawables;
 
             var drawableRenderers = drawables.AddComponentEach<CubismRenderer>();
@@ -269,7 +207,7 @@ namespace Live2D.Cubism.Rendering
                 HasRootPartOffscreen = CheckHasRootPartOffscreen(targetRenderer);
             }
 
-            // Store drawable renderers.
+            // 이후 mask·정렬 경로가 다시 찾지 않도록 Drawable renderer 배열을 저장합니다.
             DrawableRenderers = drawableRenderers;
 
             var offscreens = Model.Offscreens;
@@ -293,21 +231,18 @@ namespace Live2D.Cubism.Rendering
                     HasRootPartOffscreen = CheckHasRootPartOffscreen(targetRenderer);
                 }
 
-                // Store offscreen renderers.
+                // 이후 계층 합성 경로가 다시 찾지 않도록 Offscreen renderer 배열을 저장합니다.
                 OffscreenRenderers = offscreenRenderers;
             }
 
-            // Store renderers.
+            // Drawable과 Offscreen을 합친 전체 renderer 배열을 controller에 저장합니다.
             Renderers = renderers;
         }
 
-        /// <summary>
-        /// Called after all <see cref="CubismRenderer"/>s are initialized.
-        /// </summary>
-        /// <param name="renderers"></param>
+        /// 입력: renderers(CubismRenderer[]); 반환: 없음.
         private void OnAfterRenderersInitialize(CubismRenderer[] renderers)
         {
-            // Set the render order and call `OnAfterAllRendererInitialize` method for each renderer.
+            // 각 renderer에 모델 draw order를 쓰고 전체 renderer 준비 뒤 필요한 후처리를 호출합니다.
             for (var i = 0; i < renderers.Length; i++)
             {
                 var initRenderer = renderers[i];
@@ -327,11 +262,7 @@ namespace Live2D.Cubism.Rendering
             }
         }
 
-        /// <summary>
-        /// Does the model have an offscreen for the root part?
-        /// </summary>
-        /// <param name="targetRenderer">The <see cref="CubismRenderer"/> to check.</param>
-        /// <returns>True if it has one, false if it does not.</returns>
+        /// 입력: targetRenderer(CubismRenderer); 반환: bool.
         private bool CheckHasRootPartOffscreen(CubismRenderer targetRenderer)
         {
             var parentPartIndex = -1;
@@ -358,7 +289,7 @@ namespace Live2D.Cubism.Rendering
                         continue;
                     }
 
-                    // Found the part.
+                    // unmanaged parent 번호에 해당하는 실제 part를 찾았으므로 상위 계층 탐색을 이어갑니다.
                     part = Model.Parts[partIndex];
                     break;
                 }
@@ -369,11 +300,7 @@ namespace Live2D.Cubism.Rendering
             return parentPartIndex == 0 && Model.Parts[parentPartIndex].OffscreenIndex > -1;
         }
 
-        /// <summary>
-        /// Submits drawing offscreen for all offscreen renderers.
-        /// </summary>
-        /// <param name="commandBuffer">Command buffer to record draw commands.</param>
-        /// <param name="passData">Pass data containing render controllers and camera data.</param>
+        /// 입력: commandBuffer(CommandBuffer), passData(CubismRenderPassFeature.CubismRenderPass.PassData); 반환: 없음.
         internal void SubmitDrawOffscreen(CommandBuffer commandBuffer, CubismRenderPassFeature.CubismRenderPass.PassData passData)
         {
             if (!IsInitialized
@@ -433,7 +360,7 @@ namespace Live2D.Cubism.Rendering
                 }
 
                 var previousIndex = -1;
-                // Find the offscreen renderer with the previous offscreen unmanaged index.
+                // 현재 owner의 부모 계층에서 가장 가까운 활성 offscreen renderer와 frame buffer를 찾습니다.
                 while (parentIndex != -1)
                 {
                     var part = Model.Parts[parentIndex];
@@ -469,7 +396,7 @@ namespace Live2D.Cubism.Rendering
                     break;
                 }
 
-                // Try to get the root part offscreen if there is no parent offscreen.
+                // 가까운 부모 offscreen이 없으면 root part의 offscreen frame buffer를 사용합니다.
                 if (!previousOffscreen && HasRootPartOffscreen)
                 {
                     for (var offscreenIndex = 0; offscreenIndex < OffscreenRenderers.Length; offscreenIndex++)
@@ -485,14 +412,14 @@ namespace Live2D.Cubism.Rendering
                     }
                 }
 
-                // If there is no previous offscreen, or it is the same as the current offscreen, use the common rendering texture.
+                // 부모가 없거나 자기 frame buffer를 가리키면 읽기·쓰기 충돌을 피해 공용 texture로 돌아갑니다.
                 if (!previousOffscreen
                     || previousOffscreen == offscreenRenderer?.OffscreenFrameBuffer)
                 {
                     previousOffscreen = passData.CommonRenderingTextureHandle;
                 }
 
-                // If It can copy the parent offscreen, copy it to the current offscreen renderer.
+                // 결정한 부모 또는 공용 texture를 입력으로 현재 offscreen 합성 draw를 기록합니다.
                 offscreenRenderer?.DrawOffscreen(commandBuffer, previousOffscreen, offscreenRenderer, passData);
 
                 if (offscreenRenderer)

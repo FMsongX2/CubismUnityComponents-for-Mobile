@@ -4,6 +4,7 @@
  * Use of this source code is governed by the Live2D Open Software license
  * that can be found at https://www.live2d.com/eula/live2d-open-software-license-agreement_en.html.
  */
+// 모바일에서 Drawable별 draw를 한 번의 배치 경로로 합칠 때 필요한 활성·중단·복구 상태를 소유합니다.
 
 
 using Live2D.Cubism.Core;
@@ -13,39 +14,19 @@ using UnityEngine;
 
 namespace Live2D.Cubism.Rendering
 {
-    /// <summary>
-    /// Mobile batched fast path state of the render controller.
-    /// </summary>
     public sealed partial class CubismRenderController
     {
-        /// <summary>
-        /// Set to force this model through the legacy per-drawable pipeline even
-        /// when it qualifies for batched rendering.
-        /// </summary>
         [SerializeField, HideInInspector]
         public bool ForceLegacyRendering;
 
-        /// <summary>
-        /// True while this model renders through <see cref="CubismBatchedModelRenderer"/>.
-        /// </summary>
         public bool IsBatchedRenderingActive { get; private set; }
 
-        /// <summary>
-        /// Batched renderer instance (null unless active).
-        /// </summary>
         internal CubismBatchedModelRenderer BatchedRenderer { get; private set; }
 
-        /// <summary>
-        /// True between a disable and the next enable while batched resources are
-        /// kept alive; gates the one-shot state refresh on resume.
-        /// </summary>
         private bool _isBatchedRendererSuspended;
 
 
-        /// <summary>
-        /// Decides whether the batched fast path applies to this model. Must run
-        /// before renderers initialize so legacy per-drawable meshes can be skipped.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void TryActivateBatchedRendering()
         {
             IsBatchedRenderingActive = false;
@@ -59,7 +40,7 @@ namespace Live2D.Cubism.Rendering
                 return;
             }
 
-            // Rendering interceptors need per-drawable draw events.
+            // interceptor는 drawable별 draw event를 요구하므로 하나로 합친 배치 경로를 사용할 수 없습니다.
             if (GetComponent<ICubismRenderingInterceptor>() != null
                 || CubismRenderingInterceptorsManager.GetInstance().Interceptors.Length > 0)
             {
@@ -75,55 +56,40 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Called on disable. Keeps the batched renderer (and its GPU/native
-        /// resources) alive so avatar power-management patterns that toggle the
-        /// controller's enabled flag resume without a rebuild stutter; only
-        /// <see cref="OnDestroy"/> releases the resources.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void SuspendBatchedRenderer()
         {
             if (BatchedRenderer != null)
             {
                 _isBatchedRendererSuspended = true;
 
-                // Nothing consumes core events while suspended, so let the core mirror
-                // vertices into the managed arrays again. Batching may not be the path
-                // taken when this controller comes back, and the legacy renderers would
-                // otherwise draw the geometry frozen at suspend time.
+                // 정지 중에는 코어 이벤트를 소비하지 않으므로 관리 사본 생성을 되살립니다.
+                // 다시 켤 때 배치 경로가 아닐 수도 있고, 그러면 legacy 렌더러가 정지 시점 기하로 얼어붙습니다.
                 BatchedRenderer.ReleaseManagedVertexCopySuppression();
             }
         }
 
 
-        /// <summary>
-        /// Called by Unity. Releases suspended batched resources.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void OnDestroy()
         {
             DisposeBatchedRenderer();
         }
 
 
-        /// <summary>
-        /// True after the app was paused (backgrounded) and before the next volatile
-        /// resource refresh. A graphics context can only be lost while the app is
-        /// paused, so focus toggles without a pause (notification shade, permission
-        /// dialogs, IME) skip the refresh copy in players.
-        /// </summary>
+#if !UNITY_EDITOR
         private bool _pausedSinceVolatileRefresh;
+#endif
 
 
-        /// <summary>
-        /// Called by Unity. Pausing is the only window in which the player's graphics
-        /// context can be lost; refresh on resume even if focus never returns
-        /// (Android multi-window resumes without focus until the user taps the app).
-        /// </summary>
+        /// 입력: isPaused(bool); 반환: 없음.
         private void OnApplicationPause(bool isPaused)
         {
             if (isPaused)
             {
+#if !UNITY_EDITOR
                 _pausedSinceVolatileRefresh = true;
+#endif
                 return;
             }
 
@@ -131,15 +97,7 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Called by Unity. Regaining focus can follow a graphics-context loss that
-        /// discards GPU-only resources; the batched texture array has no CPU backing,
-        /// so refresh it or the avatar returns as a flat gray silhouette. Scene
-        /// transitions are already covered by the resume path; this handles the
-        /// background/foreground case that has no transition. In the editor the
-        /// refresh stays unconditional: editor window occlusion events can drop
-        /// material state without any pause being reported.
-        /// </summary>
+        /// 입력: hasFocus(bool); 반환: 없음.
         private void OnApplicationFocus(bool hasFocus)
         {
             if (!hasFocus)
@@ -158,9 +116,12 @@ namespace Live2D.Cubism.Rendering
         }
 
 
+        /// 입력: 없음; 반환: 없음.
         private void RefreshVolatileGpuResourcesAfterGap()
         {
+#if !UNITY_EDITOR
             _pausedSinceVolatileRefresh = false;
+#endif
 
             if (IsBatchedRenderingActive
                 && BatchedRenderer != null
@@ -171,16 +132,12 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Creates the batched renderer once renderers are initialized.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void TryInitializeBatchedRenderer()
         {
             if (!IsBatchedRenderingActive)
             {
-                // Fell back (or was disabled globally) while a suspended batched
-                // renderer still holds resources: release it; the legacy meshes are
-                // healed by OnEnable.
+                // 중단 중 배치가 비활성화되면 남은 GPU 자원을 해제하고, legacy mesh 복구는 OnEnable에 맡깁니다.
                 if (BatchedRenderer != null)
                 {
                     DisposeBatchedRenderer();
@@ -198,11 +155,7 @@ namespace Live2D.Cubism.Rendering
                         return;
                     }
 
-                    // The renderer was invalidated mid-run (its resources were
-                    // destroyed externally). Without this the batched path records
-                    // nothing while the legacy renderers have no meshes either, so
-                    // the model would silently vanish until the controller cycles.
-                    // Fall back to legacy and rebuild the per-drawable meshes.
+                    // 실행 중 외부에서 GPU 자원이 파괴되면 배치는 draw를 기록하지 못하고 legacy mesh도 없으므로, legacy로 되돌려 mesh를 다시 만듭니다.
                     DisposeBatchedRenderer();
 
                     var legacyRenderers = Renderers;
@@ -214,7 +167,7 @@ namespace Live2D.Cubism.Rendering
                     return;
                 }
 
-                // Re-enabled with live resources: refresh state instead of rebuilding.
+                // 자원이 살아 있는 재활성화이면 새로 만들지 않고 최신 모델 상태만 다시 읽습니다.
                 _isBatchedRendererSuspended = false;
 
                 if (BatchedRenderer.ResumeAfterDisable())
@@ -222,7 +175,7 @@ namespace Live2D.Cubism.Rendering
                     return;
                 }
 
-                // The model changed shape while suspended — rebuild from scratch.
+                // 중단 사이 모델 topology가 바뀌었으면 기존 buffer를 버리고 처음부터 다시 만듭니다.
                 BatchedRenderer.Dispose();
                 BatchedRenderer = null;
             }
@@ -234,8 +187,7 @@ namespace Live2D.Cubism.Rendering
 
             if (BatchedRenderer == null || !BatchedRenderer.IsValid)
             {
-                // Initialization failed; renderers already skipped their meshes, so
-                // rebuild them for the legacy path.
+                // 배치 초기화 실패 시 생략했던 drawable별 mesh를 legacy 경로용으로 복구합니다.
                 BatchedRenderer?.Dispose();
                 BatchedRenderer = null;
                 IsBatchedRenderingActive = false;
@@ -249,17 +201,14 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Releases the batched renderer.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void DisposeBatchedRenderer()
         {
             _isBatchedRendererSuspended = false;
 
             if (BatchedRenderer != null)
             {
-                // Keep per-drawable renderers consistent in case the model comes back
-                // on the legacy path.
+                // legacy로 돌아올 때 drawable별 renderer 상태가 배치 이전 상태와 일치하도록 복원합니다.
                 if (Application.isPlaying)
                 {
                     BatchedRenderer.RestoreLegacyRendererState();
@@ -273,10 +222,33 @@ namespace Live2D.Cubism.Rendering
         }
 
 
-        /// <summary>
-        /// Fast-path consumption of new dynamic core data.
-        /// </summary>
-        /// <returns>True when handled (legacy per-renderer processing must be skipped).</returns>
+        /// 입력: 없음; 반환: 해제한 배치 렌더러 수.
+        /// 도메인 리로드처럼 OnDestroy가 보장되지 않는 경계에서 살아 있는 모든 배치 렌더러의
+        /// 네이티브 자원을 즉시 해제한다(에디터 안전장치 전용 — 정상 수명은 OnDestroy가 소유).
+        public static int DisposeAllLiveBatchedRenderers()
+        {
+            var controllers = Object.FindObjectsByType<CubismRenderController>(
+                FindObjectsInactive.Include, FindObjectsSortMode.None);
+            var disposed = 0;
+
+            for (var i = 0; i < controllers.Length; i++)
+            {
+                var controller = controllers[i];
+
+                if (controller == null || controller.BatchedRenderer == null)
+                {
+                    continue;
+                }
+
+                controller.DisposeBatchedRenderer();
+                disposed++;
+            }
+
+            return disposed;
+        }
+
+
+        /// 입력: sender(CubismModel), data(CubismDynamicDrawableData[]); 반환: bool.
         private bool TryConsumeDynamicDataBatched(CubismModel sender, CubismDynamicDrawableData[] data)
         {
             if (!IsBatchedRenderingActive)
@@ -293,7 +265,7 @@ namespace Live2D.Cubism.Rendering
 
             BatchedRenderer.ConsumeDynamicData(data);
 
-            // Preserve public handler callbacks.
+            // 배치가 dynamic data를 소비해도 공개 draw-order handler 호출 계약은 그대로 유지합니다.
             var drawOrderHandler = DrawOrderHandlerInterface;
 
             if (drawOrderHandler != null)

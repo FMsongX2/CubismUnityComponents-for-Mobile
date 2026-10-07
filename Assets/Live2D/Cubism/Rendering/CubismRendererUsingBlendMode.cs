@@ -4,6 +4,8 @@
  * Use of this source code is governed by the Live2D Open Software license
  * that can be found at https://www.live2d.com/eula/live2d-open-software-license-agreement_en.html.
  */
+// Cubism 5.3 이후의 마스크·오프스크린·복합 blend 렌더 단계를 구현합니다.
+// 각 Drawable의 중간 RenderTexture와 shader property 상태 수명을 관리합니다.
 
 
 using Live2D.Cubism.Core;
@@ -16,26 +18,17 @@ using UnityEngine.Rendering.RenderGraphModule;
 
 namespace Live2D.Cubism.Rendering
 {
-    /// <summary>
-    /// Partial class that describes processing related to the rendering method added in Cubism 5.3 and later.
-    /// </summary>
     public partial class CubismRenderer
     {
         #region Values
 
-        /// <summary>
-        /// High precision mask tile for mask rendering.
-        /// </summary>
         private static Vector4 HighPrecisionMaskTile = new Vector4(
-            0, // Channel R
-            0, // Column
-            0, // Row
-            1 // Size
+            0, // R 채널
+            0, // atlas 열
+            0, // atlas 행
+            1 // tile 크기
         );
 
-        /// <summary>
-        /// Vertices for offscreen rendering.
-        /// </summary>
         internal static Vector3[] OffscreenVertices = new Vector3[]
         {
             new Vector3(-1, -1, 0),
@@ -44,9 +37,6 @@ namespace Live2D.Cubism.Rendering
             new Vector3(-1, 1, 0)
         };
 
-        /// <summary>
-        /// UVs for offscreen rendering.
-        /// </summary>
         internal static Vector2[] OffscreenUVs = new Vector2[]
         {
             new Vector2(0, 0),
@@ -55,76 +45,37 @@ namespace Live2D.Cubism.Rendering
             new Vector2(0, 1)
         };
 
-        /// <summary>
-        /// Triangle indices for offscreen rendering.
-        /// </summary>
         internal static int[] OffscreenTriangle = new int[] { 0, 1, 2, 0, 2, 3 };
 
-        /// <summary>
-        /// Masks used by this renderer.
-        /// </summary>
         [SerializeField, HideInInspector]
         private CubismRenderer[] _masks;
 
-        /// <summary>
-        /// Transform values for mask rendering.
-        /// </summary>
         private Vector4 _maskTransform;
 
-        /// <summary>
-        /// Bounds that contain all masks.
-        /// </summary>
         private Bounds _maskBounds;
 
 #if UNITY_EDITOR
-        /// <summary>
-        /// Whether <see cref="_masks"/> have null.
-        /// </summary>
         private bool _haveMasksNull;
 #endif
 
-        /// <summary>
-        /// Index of the draw object.
-        /// </summary>
         public int DrawObjectUnmanagedIndex { get; set; }
 
-        /// <summary>
-        /// <see cref="CubismOffscreen"/>.
-        /// </summary>
         public CubismOffscreen Offscreen { get; set; }
 
 
-        /// <summary>
-        /// Color blend types.
-        /// </summary>
         [SerializeField]
         public BlendTypes.ColorBlend ColorBlendType;
 
-        /// <summary>
-        /// Alpha blend types.
-        /// </summary>
         [SerializeField]
         public BlendTypes.AlphaBlend AlphaBlendType;
 
-        /// <summary>
-        /// Type of draw object this renderer is used for.
-        /// </summary>
         [SerializeField]
         public CubismModelTypes.DrawObjectType DrawObjectType;
 
-        /// <summary>
-        /// Whether this is the last draw object in the model.
-        /// </summary>
         internal bool IsLastDrawObjectInModel;
 
-        /// <summary>
-        /// <see cref="OffscreenFrameBuffer"/>'s backing field.
-        /// </summary>
         private RenderTexture _offscreenFrameBuffer;
 
-        /// <summary>
-        /// Offscreen render texture used for rendering.
-        /// </summary>
         public RenderTexture OffscreenFrameBuffer
         {
             get
@@ -151,37 +102,19 @@ namespace Live2D.Cubism.Rendering
             }
         }
 
-        /// <summary>
-        /// <see cref="OffsetScale"/>'s backing field.
-        /// </summary>
         [SerializeField, HideInInspector]
         private Vector4 _offsetScale = new Vector4(0, 0, 1, 1);
 
-        /// <summary>
-        /// <see cref="Quaternion"/>'s backing field.
-        /// </summary>
         [SerializeField, HideInInspector]
         private Vector4 _quaternion = Vector4.zero;
 
-        /// <summary>
-        /// <see cref="ZOffset"/>'s backing field.
-        /// </summary>
         [SerializeField, HideInInspector]
         private float _zOffset = 0.0f;
 
-        /// <summary>
-        /// Offscreen mesh used for rendering.
-        /// </summary>
         private Mesh _offscreenMesh;
 
-        /// <summary>
-        /// Previous offscreen unmanaged index.
-        /// </summary>
         private int _previousOffscreenUnmanagedIndex;
 
-        /// <summary>
-        /// Whether to skip rendering for this draw object.
-        /// </summary>
         public bool SkipRendering
         {
             get;
@@ -192,10 +125,7 @@ namespace Live2D.Cubism.Rendering
 
         #region Interface For CubismRenderController
 
-        /// <summary>
-        /// Sets draw object's render order.
-        /// </summary>
-        /// <param name="newRenderOrder"></param>
+        /// 입력: newRenderOrder(int); 반환: 없음.
         internal void SetDrawObjectRenderOrder(int newRenderOrder)
         {
             if (RenderOrder == newRenderOrder) return;
@@ -207,59 +137,40 @@ namespace Live2D.Cubism.Rendering
 
         #endregion
 
-        /// <summary>
-        /// Sorting direction at the last sorting.
-        /// </summary>
         internal Vector3 LastDirection;
 
-        /// <summary>
-        /// Whether the direction has been updated since the last sorting.
-        /// </summary>
-        /// <returns>True if the direction has changed, false otherwise.</returns>
+        /// 입력: cameraPosition(Vector3); 반환: bool.
         internal bool DidUpdateDirectionFromLastSorted(Vector3 cameraPosition)
         {
             return LastDirection != (transform.position - cameraPosition);
         }
 
-        /// <summary>
-        /// Distance from the active camera.
-        /// </summary>
         internal float DistanceToCamera;
 
-        /// <summary>
-        /// Calculates the distance by projecting the vector from camera to renderer onto the camera's forward direction.
-        /// </summary>
-        /// <param name="cameraPosition">Position of the camera.</param>
-        /// <param name="cameraForward">Forward direction of the camera (normalized vector).</param>
+        /// 입력: cameraPosition(Vector3), cameraForward(Vector3); 반환: 없음.
         internal void CalculateDistanceToCamera(Vector3 cameraPosition, Vector3 cameraForward)
         {
-            // Vector from cameraPosition to transform.position
+            // 카메라에서 이 renderer 월드 위치로 향하는 벡터입니다.
             var directionToRenderer = transform.position - cameraPosition;
 
             LastDirection = directionToRenderer;
 
-            // Project the vector onto the camera's forward direction
+            // 카메라 forward 축에 투영해 깊이 정렬에 쓸 성분만 남깁니다.
             var projection = Vector3.Project(directionToRenderer, cameraForward);
 
-            // The magnitude of the projected vector is the distance along the camera's forward direction
-            // Formula: projection = dot(directionToRenderer, cameraForward) * cameraForward
-            // Distance = |projection| = |dot(directionToRenderer, cameraForward)|
+            // 투영 벡터 길이가 카메라 forward 축을 따라 떨어진 깊이 거리입니다.
+            // 투영은 directionToRenderer와 cameraForward의 내적을 forward에 곱해 구합니다.
+            // 따라서 거리는 그 내적의 절댓값과 같습니다.
             DistanceToCamera = projection.magnitude;
         }
 
-        /// <summary>
-        /// <see cref="PropertyBlock"/> backing field.
-        /// </summary>
         private MaterialPropertyBlock _propertyBlock;
 
-        /// <summary>
-        /// <see cref="MaterialPropertyBlock"/>
-        /// </summary>
         private MaterialPropertyBlock PropertyBlock
         {
             get
             {
-                // Lazily initialize.
+                // 처음 필요한 시점에만 block을 만들어 이후 frame에는 재사용합니다.
                 if (_propertyBlock == null)
                 {
                     _propertyBlock = new MaterialPropertyBlock();
@@ -270,10 +181,7 @@ namespace Live2D.Cubism.Rendering
             }
         }
 
-        /// <summary>
-        /// Applies common rendering texture for rendering.
-        /// </summary>
-        /// <param name="passData">Pass data containing render controllers and camera data.</param>
+        /// 입력: passData(CubismRenderPassFeature.CubismRenderPass.PassData); 반환: 없음.
         private void ApplyBlendedRenderTexture(CubismRenderPassFeature.CubismRenderPass.PassData passData)
         {
             if (!RenderController?.CurrentFrameBuffer)
@@ -290,10 +198,7 @@ namespace Live2D.Cubism.Rendering
             MeshRenderer.SetPropertyBlock(property);
         }
 
-        /// <summary>
-        /// Writes the blended render texture into an already-fetched property block.
-        /// No-op when there is no current frame buffer (matches <see cref="ApplyBlendedRenderTexture"/>).
-        /// </summary>
+        /// 입력: property(MaterialPropertyBlock), passData(CubismRenderPassFeature.CubismRenderPass.PassData); 반환: 없음.
         private void WriteBlendedRenderTexture(MaterialPropertyBlock property, CubismRenderPassFeature.CubismRenderPass.PassData passData)
         {
             if (!RenderController?.CurrentFrameBuffer)
@@ -304,12 +209,8 @@ namespace Live2D.Cubism.Rendering
             property.SetTexture(CubismShaderVariables.RenderTexture, passData.CommonTemporaryTextureHandle);
         }
 
-        /// <summary>
-        /// Adds this renderer to the command buffer for rendering.
-        /// </summary>
-        /// <param name="buffer">Command buffer to record draw commands.</param>
-        /// <param name="passData">Pass data containing render controllers and camera data.</param>
-        public void DrawObject(CommandBuffer buffer, CubismRenderPassFeature.CubismRenderPass.PassData passData)//, RenderTexture frameBuffer)
+        /// 입력: buffer(CommandBuffer), passData(CubismRenderPassFeature.CubismRenderPass.PassData); 반환: 없음.
+        public void DrawObject(CommandBuffer buffer, CubismRenderPassFeature.CubismRenderPass.PassData passData)// 이전 RenderTexture 인자는 사용하지 않습니다.
         {
             if (!MeshRenderer)
             {
@@ -319,19 +220,17 @@ namespace Live2D.Cubism.Rendering
             switch (DrawObjectType)
             {
                 case CubismModelTypes.DrawObjectType.Offscreen:
-                    // Set offscreen frame buffer.
+                    // 이 offscreen part가 다음 Drawable을 쌓을 framebuffer를 준비합니다.
                     SetOffscreen(buffer, passData);
                     break;
                 case CubismModelTypes.DrawObjectType.Drawable:
-                    // Draw a drawable.
+                    // 일반 Drawable의 mask·blend 경로 draw를 기록합니다.
                     DrawDrawable(buffer, passData);
                     break;
             }
         }
 
-        /// <summary>
-        /// Applies transform properties to the material property block.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void ApplyTransform()
         {
             var property = PropertyBlock;
@@ -342,74 +241,61 @@ namespace Live2D.Cubism.Rendering
             MeshRenderer.SetPropertyBlock(property);
         }
 
-        /// <summary>
-        /// Writes offset/scale, rotation and z-offset into an already-fetched property block.
-        /// Lets the draw path batch all writes into a single Get/SetPropertyBlock round-trip.
-        /// </summary>
+        /// 입력: property(MaterialPropertyBlock); 반환: 없음.
         private void WriteTransform(MaterialPropertyBlock property)
         {
-            // World-composed transform: the model may live under a placement rig (parent owns
-            // position/scale), so local components are only correct while the model sits at the
-            // scene root. Same root-assumption already fixed in the batched path's RecordMainDraws —
-            // without this, edit mode (legacy path) and play mode (batched path) render at
-            // different sizes/positions.
+            // 모델은 AvatarRig 같은 부모가 위치·scale을 소유할 수 있으므로 local 값만 쓰면 씬 루트가 아닐 때 틀립니다.
+            // 배치 경로 RecordMainDraws와 같은 월드 합성 기준을 써야 Edit legacy와 Play batch의 위치·크기가 일치합니다.
             var controllerTransform = RenderController.transform;
             var worldPosition = controllerTransform.position;
             var worldScale = controllerTransform.lossyScale;
 
-            // Set offset and scale from transform.
+            // controller 월드 위치·scale과 Drawable local 보정을 합쳐 shader offset·scale을 만듭니다.
             var offsetScale = _offsetScale;
 
             offsetScale.Set(worldPosition.x + transform.localPosition.x, worldPosition.y + transform.localPosition.y,
                 worldScale.x * transform.localScale.x, worldScale.y * transform.localScale.y);
             _offsetScale = offsetScale;
-            // Write property.
+            // 계산한 offset·scale을 이번 draw의 shader property에 기록합니다.
             property.SetVector(CubismShaderVariables.OffsetScale, _offsetScale);
 
-            // Set rotation from transform.
+            // controller 월드 회전과 Drawable local 회전을 합친 회전을 만듭니다.
             var combinedRotation = controllerTransform.rotation * transform.localRotation;
             _quaternion.Set(combinedRotation.x, combinedRotation.y, combinedRotation.z, combinedRotation.w);
 
-            // Write property.
+            // 합성한 quaternion을 이번 draw의 shader property에 기록합니다.
             property.SetVector(CubismShaderVariables.RotationQuaternion, _quaternion);
 
-            // Set z offset from transform.
+            // 월드 Z와 Drawable local Z를 합쳐 depth 보정값을 만듭니다.
             _zOffset = worldPosition.z + transform.localPosition.z;
-            // Write property.
+            // 계산한 Z 보정값을 이번 draw의 shader property에 기록합니다.
             property.SetFloat(CubismShaderVariables.ZOffset, _zOffset);
         }
 
-        /// <summary>
-        /// Sets the offscreen frame buffer for rendering.
-        /// </summary>
-        /// <param name="buffer">Command buffer to record draw commands.</param>
-        /// <param name="passData">Pass data containing render controllers and camera data.</param>
+        /// 입력: buffer(CommandBuffer), passData(CubismRenderPassFeature.CubismRenderPass.PassData); 반환: 없음.
         private void SetOffscreen(CommandBuffer buffer, CubismRenderPassFeature.CubismRenderPass.PassData passData)
         {
             var currentOffscreenUnmanagedIndex = RenderController.CurrentOffscreenUnmanagedIndex;
             SubmitDrawToParentOffscreen(ref passData, ref currentOffscreenUnmanagedIndex,
                 buffer, this);
 
-            // Ready the render target to the offscreen frame buffer.
+            // 풀에서 빌린 texture를 이 offscreen part의 framebuffer로 연결합니다.
             OffscreenFrameBuffer = CubismOffscreenRenderTextureManager.GetInstance().GetOffscreenRenderTexture(passData.CommonRenderingTextureHandle);
 
-            // Set current frame buffer to offscreen frame buffer.
+            // 이후 command가 이 offscreen framebuffer에 쓰도록 target을 바꿉니다.
             buffer.SetRenderTarget(OffscreenFrameBuffer);
-            // Clear the offscreen frame buffer.
+            // 이전 part의 색이 섞이지 않게 offscreen color를 지웁니다.
             buffer.ClearRenderTarget(false, true, Color.clear);
 
-            // Set up for drawing to offscreen.
+            // controller의 현재 framebuffer와 offscreen index를 새 계층으로 갱신합니다.
             RenderController.CurrentFrameBuffer = OffscreenFrameBuffer;
             RenderController.CurrentOffscreenUnmanagedIndex = Offscreen.UnmanagedIndex;
         }
 
-        /// <summary>
-        /// Gets the bounds that can contain all masks.
-        /// </summary>
-        /// <returns></returns>
+        /// 입력: 없음; 반환: Bounds.
         private Bounds GetMaskBounds()
         {
-            // If there are no masks, return empty bounds.
+            // mask가 없으면 합칠 기하가 없으므로 빈 Bounds를 반환합니다.
             if (_masks == null
                 || _masks.Length < 1)
             {
@@ -422,8 +308,8 @@ namespace Live2D.Cubism.Rendering
 
             for (var i = 1; i < _masks.Length; ++i)
             {
-                // Skip if the mask is null. The mesh is null too while the model
-                // renders batched, so guard it the same way the seed values above do.
+                // 아직 생성되지 않은 mask는 Bounds 합산에서 제외합니다.
+                // 배치 렌더링 중에는 Mesh도 null이므로 위 시드값과 같은 방식으로 막습니다.
                 var maskMesh = _masks[i] ? _masks[i].Mesh : null;
 
                 if (maskMesh == null)
@@ -463,43 +349,37 @@ namespace Live2D.Cubism.Rendering
             return _maskBounds;
         }
 
-        /// <summary>
-        /// Calculates the transform values for mask rendering based on mask bounds.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void CalcMaskTransform()
         {
-            // Compute bounds and scale.
+            // 모든 mask Bounds와 긴 축 길이를 읽어 정규화 scale을 구합니다.
             var bounds = GetMaskBounds();
             var scale = (bounds.size.x > bounds.size.y)
                 ? bounds.size.x
                 : bounds.size.y;
 
-            // Compute mask transform.
+            // Bounds 중심과 scale을 shader mask 좌표 변환으로 기록합니다.
             var maskTransform = _maskTransform;
             maskTransform.Set(
-                bounds.center.x, // Offset X
-                bounds.center.y, // Offset Y
-                1.0f / scale, // Scale
-                0 // Dummy, unused.
+                bounds.center.x, // 중심 X 오프셋
+                bounds.center.y, // 중심 Y 오프셋
+                1.0f / scale, // 정규화 scale
+                0 // 사용하지 않는 예약 성분
                   );
             _maskTransform = maskTransform;
         }
 
-        /// <summary>
-        /// Draws the mask.
-        /// </summary>
-        /// <param name="buffer">Command buffer to record draw commands.</param>
-        /// <param name="passData">Pass data containing render controllers and camera data.</param>
+        /// 입력: buffer(CommandBuffer), passData(CubismRenderPassFeature.CubismRenderPass.PassData); 반환: 없음.
         internal void DrawMasks(CommandBuffer buffer, CubismRenderPassFeature.CubismRenderPass.PassData passData)
         {
-            // If the model doesn't have masks, return.
+            // 모델에 mask가 없으면 atlas target을 건드리지 않습니다.
             if (!RenderController.HasMask)
             {
                 return;
             }
 
 #if UNITY_EDITOR
-            // If the masks have null, try to initialize them.
+            // Editor에서 누락된 mask 참조가 있으면 다시 찾아 캐시를 복구합니다.
             if (_haveMasksNull)
             {
                 TryInitializeMasks();
@@ -514,10 +394,10 @@ namespace Live2D.Cubism.Rendering
                 buffer.SetRenderTarget(maskTexture);
                 buffer.ClearRenderTarget(true, true, Color.clear);
 
-                // Calculate mask transform.
+                // 현재 mask 기하에 맞는 atlas 좌표 변환을 계산합니다.
                 CalcMaskTransform();
 
-                // Draw the masks.
+                // 각 mask mesh를 mask target에 기록합니다.
                 for (var maskIndex = 0; maskIndex < _masks.Length; maskIndex++)
                 {
                     var mask = _masks[maskIndex];
@@ -537,7 +417,7 @@ namespace Live2D.Cubism.Rendering
                             mask.PropertyBlock.SetVector(CubismShaderVariables.MaskTile, HighPrecisionMaskTile);
                             mask.PropertyBlock.SetVector(CubismShaderVariables.MaskTransform, _maskTransform);
 
-                            // Draw the mesh with the material.
+                            // Drawable mask material로 mesh draw를 기록합니다.
                             buffer.DrawMesh(
                                 mask.Mesh,
                                 Matrix4x4.identity,
@@ -552,7 +432,7 @@ namespace Live2D.Cubism.Rendering
                             mask.PropertyBlock.SetTexture(CubismShaderVariables.MainTexture, mask.MainTexture);
                             mask.ApplyTransform();
 
-                            // Draw the mesh with the material.
+                            // offscreen mask material로 월드 변환된 mesh draw를 기록합니다.
                             buffer.DrawMesh(
                                 mask.Mesh,
                                 Matrix4x4.identity,
@@ -571,13 +451,7 @@ namespace Live2D.Cubism.Rendering
             }
         }
 
-        /// <summary>
-        /// Submits the offscreen frame buffer and draws to the parent offscreen if necessary.
-        /// </summary>
-        /// <param name="passData">Pass data containing render controllers and camera data.</param>
-        /// <param name="currentOffscreenUnmanagedIndex">Current offscreen's unmanaged index.</param>
-        /// <param name="buffer">Command buffer to record draw commands.</param>
-        /// <param name="targetRenderer">Current target rendering object.</param>
+        /// 입력: passData(ref CubismRenderPassFeature.CubismRenderPass.PassData), currentOffscreenUnmanagedIndex(ref int), buffer(CommandBuffer), targetRenderer(CubismRenderer); 반환: 없음.
         private void SubmitDrawToParentOffscreen(ref CubismRenderPassFeature.CubismRenderPass.PassData passData, ref int currentOffscreenUnmanagedIndex,
             CommandBuffer buffer, CubismRenderer targetRenderer)
         {
@@ -588,7 +462,7 @@ namespace Live2D.Cubism.Rendering
                 return;
             }
 
-            // Get the current offscreen renderer.
+            // 현재 offscreen unmanaged index를 소유한 renderer를 찾습니다.
             CubismRenderer offscreenRenderer = null;
             for (var offscreenRendererIndex = 0; offscreenRendererIndex < RenderController.OffscreenRenderers.Length; offscreenRendererIndex++)
             {
@@ -605,7 +479,7 @@ namespace Live2D.Cubism.Rendering
 
             if (currentOwnerIndex == -1)
             {
-                // Fail silently if the offscreen renderer is not found.
+                // 해제 중이거나 캐시가 없으면 합성을 기록하지 않고 종료합니다.
                 return;
             }
 
@@ -617,18 +491,18 @@ namespace Live2D.Cubism.Rendering
                     targetParentIndex = targetRenderer.Drawable.ParentPartIndex;
                     break;
                 case CubismModelTypes.DrawObjectType.Offscreen:
-                    // Check target renderer's offscreen owner type.
+                    // 대상 offscreen의 owner part 부모를 다음 비교 기준으로 읽습니다.
                     targetParentIndex = RenderController.Model.Parts[targetRenderer.Offscreen.OwnerIndex].UnmanagedParentIndex;
                     break;
                 default:
-                    // If the draw object type is not drawable or offscreen, return.
+                    // 지원하지 않는 draw object는 parent 합성 경로가 없으므로 종료합니다.
                     return;
             }
 
-            // If targetRenderer isn't child of the current offscreen renderer.
+            // 대상이 현재 offscreen owner의 자식인지 part 부모 체인을 따라 확인합니다.
             while (targetParentIndex != -1)
             {
-                // If the target parent index is the same as the current owner index, return.
+                // 현재 owner 아래 대상이면 framebuffer를 닫지 않고 그대로 계속 draw합니다.
                 if (targetParentIndex == RenderController.Model.Parts[currentOwnerIndex].UnmanagedIndex)
                 {
                     return;
@@ -638,7 +512,7 @@ namespace Live2D.Cubism.Rendering
             }
             var parentIndex = RenderController.Model.Parts[currentOwnerIndex].UnmanagedParentIndex;
 
-            // Find the offscreen renderer with the previous offscreen unmanaged index.
+            // 상위 part 체인에서 이전 framebuffer를 줄 offscreen renderer를 찾습니다.
             while (parentIndex != -1)
             {
                 var part = RenderController.Model.Parts[parentIndex];
@@ -671,7 +545,7 @@ namespace Live2D.Cubism.Rendering
                 break;
             }
 
-            // Try to get the root part offscreen if there is no parent offscreen.
+            // 상위 offscreen이 없으면 root part offscreen을 이전 framebuffer 후보로 찾습니다.
             if (!previousOffscreen && RenderController.HasRootPartOffscreen)
             {
                 var offscreenRenderers = RenderController.OffscreenRenderers;
@@ -688,7 +562,7 @@ namespace Live2D.Cubism.Rendering
                 }
             }
 
-            // If there is no parent offscreen, use the common rendering texture.
+            // 상위 framebuffer가 없으면 공용 렌더 texture로 되돌립니다.
             if (!previousOffscreen)
             {
                 previousOffscreen = passData.CommonRenderingTextureHandle;
@@ -699,23 +573,19 @@ namespace Live2D.Cubism.Rendering
                 return;
             }
 
-            // If It can copy the parent offscreen, copy it to the current offscreen renderer.
+            // 이전 framebuffer 내용을 현재 offscreen으로 합성해 부모 결과를 이어받습니다.
             DrawOffscreen(buffer, previousOffscreen, offscreenRenderer, passData);
 
             offscreenRenderer.OffscreenFrameBuffer = null;
             RenderController.CurrentFrameBuffer = previousOffscreen;
             currentOffscreenUnmanagedIndex = _previousOffscreenUnmanagedIndex;
 
-            // If the current offscreen is the parent of the target renderer, draw to the parent offscreen.
+            // 현재 offscreen이 대상의 부모이면 부모 framebuffer를 다음 draw target으로 유지합니다.
             SubmitDrawToParentOffscreen(ref passData, ref currentOffscreenUnmanagedIndex,
                 buffer, targetRenderer);
         }
 
-        /// <summary>
-        /// Renders a drawable.
-        /// </summary>
-        /// <param name="buffer">Command buffer to record draw commands.</param>
-        /// <param name="passData">Pass data containing render controllers and camera data.</param>
+        /// 입력: buffer(CommandBuffer), passData(CubismRenderPassFeature.CubismRenderPass.PassData); 반환: 없음.
         private void DrawDrawable(CommandBuffer buffer, CubismRenderPassFeature.CubismRenderPass.PassData passData)
         {
             if (!RenderController)
@@ -732,13 +602,11 @@ namespace Live2D.Cubism.Rendering
                 RenderController.CurrentOffscreenUnmanagedIndex = currentOffscreenOwnerUnmanagedIndex;
             }
 
-            // Mask rendering.
+            // high precision mask 결과를 현재 Drawable shader에 연결합니다.
             DrawMasks(buffer, passData);
 
-            // [PERF] Batch all MaterialPropertyBlock writes into a single Get/SetPropertyBlock
-            // round-trip instead of one Get+Set per Apply* call (was up to 5 round-trips per
-            // drawable per frame). DrawObject only routes drawables here, so the drawable-only
-            // writes are always valid.
+            // PropertyBlock Get/Set을 한 번만 수행해 Drawable당 최대 다섯 번의 왕복을 피합니다.
+            // DrawObject는 여기로 Drawable만 보내므로 Drawable 전용 property를 안전하게 함께 기록할 수 있습니다.
             var property = PropertyBlock;
             MeshRenderer.GetPropertyBlock(property);
             WriteMainTexture(property);
@@ -748,17 +616,17 @@ namespace Live2D.Cubism.Rendering
             WriteTransform(property);
             MeshRenderer.SetPropertyBlock(property);
 
-            // Vertex colors are uploaded to the mesh, not the property block.
+            // 정점 색은 property block이 아니라 mesh vertex stream에서 갱신합니다.
             ApplyVertexColors();
 
-            // In the case of color blending before Cubism 5.2.
+            // Cubism 5.2 이전 색 blend 호환 경로를 적용합니다.
             if ((ColorBlendType == BlendTypes.ColorBlend.Normal
                 && AlphaBlendType == BlendTypes.AlphaBlend.Over)
                 || ColorBlendType == BlendTypes.ColorBlend.Add
                 || ColorBlendType == BlendTypes.ColorBlend.Multiply)
             {
-                // If the current frame buffer is different from the common rendering texture, update it.
-                // HACK: Assumes that the size has already been corrected in the `SetOffscreen()` function for cases where drawing occurs to the offscreen.
+                // 현재 framebuffer가 공용 texture와 다르면 shader 입력을 해당 framebuffer로 갱신합니다.
+                // offscreen으로 그릴 경우 크기는 SetOffscreen에서 이미 맞았다는 전제입니다.
                 if (!RenderController.CurrentFrameBuffer
                     || RenderController.CurrentFrameBuffer.width != ((RenderTexture)passData.CameraDepthTextureHandle).width
                     || RenderController.CurrentFrameBuffer.height != ((RenderTexture)passData.CameraDepthTextureHandle).height)
@@ -766,32 +634,26 @@ namespace Live2D.Cubism.Rendering
                     RenderController.CurrentFrameBuffer = passData.CommonRenderingTextureHandle;
                 }
 
-                // Set render target with depth buffer for proper depth testing
+                // Unity 물체와 정확히 depth test하도록 color·depth target을 함께 설정합니다.
                 buffer.SetRenderTarget(RenderController.CurrentFrameBuffer, passData.CameraDepthTextureHandle);
 
-                // Draw the mesh with the material.
+                // 준비한 material과 property block으로 mesh draw를 기록합니다.
                 buffer.DrawMesh(Mesh, Matrix4x4.identity, DrawMaterial ?? Material, 0, 0, PropertyBlock);
 
                 return;
             }
 
-            // Blit to temporary texture.
+            // blend 전에 현재 결과를 임시 texture로 복사합니다.
             buffer.Blit(RenderController.CurrentFrameBuffer, passData.CommonTemporaryTextureHandle);
 
-            // Set temporary render target.
+            // 다음 blend 결과가 쌓일 임시 target을 설정합니다.
             buffer.SetRenderTarget(RenderController.CurrentFrameBuffer, passData.CameraDepthTextureHandle);
 
-            // Draw the mesh with the material.
+            // blend material로 Drawable mesh를 임시 target에 그립니다.
             buffer.DrawMesh(Mesh, Matrix4x4.identity, DrawMaterial ?? Material, 0, 0, PropertyBlock);
         }
 
-        /// <summary>
-        /// Copies the current drawable to the parent offscreen.
-        /// </summary>
-        /// <param name="buffer">Command buffer to record draw commands.</param>
-        /// <param name="previousOffscreen">Previous offscreen render texture.</param>
-        /// <param name="currentOffscreenRenderer">Current offscreen renderer.</param>
-        /// <param name="passData">Pass data containing render controllers and camera data.</param>
+        /// 입력: buffer(CommandBuffer), previousOffscreen(RenderTexture), currentOffscreenRenderer(CubismRenderer), passData(CubismRenderPassFeature.CubismRenderPass.PassData); 반환: 없음.
         internal void DrawOffscreen(CommandBuffer buffer, RenderTexture previousOffscreen, CubismRenderer currentOffscreenRenderer, CubismRenderPassFeature.CubismRenderPass.PassData passData)
         {
             if (previousOffscreen == null
@@ -800,24 +662,19 @@ namespace Live2D.Cubism.Rendering
                 return;
             }
 
-            // Draw the mesh with the material.
+            // 합성 material로 mesh draw를 기록합니다.
             currentOffscreenRenderer.DrawOffscreenMesh(buffer, previousOffscreen, passData);
         }
 
-        /// <summary>
-        /// Draws the mesh for offscreen rendering.
-        /// </summary>
-        /// <param name="buffer">Command buffer to record draw commands.</param>
-        /// <param name="previousOffscreen">Previous offscreen render texture.</param>
-        /// <param name="passData">Pass data containing render controllers and camera data.</param>
+        /// 입력: buffer(CommandBuffer), previousOffscreen(RenderTexture), passData(CubismRenderPassFeature.CubismRenderPass.PassData); 반환: 없음.
         internal void DrawOffscreenMesh(CommandBuffer buffer, RenderTexture previousOffscreen, CubismRenderPassFeature.CubismRenderPass.PassData passData)
         {
-            // Mask rendering.
+            // 이 Drawable에 mask texture·transform property를 적용합니다.
             DrawMasks(buffer, passData);
 
             ApplyPropertyForOffscreen(previousOffscreen);
 
-            // In the case of color blending before Cubism 5.2.
+            // Cubism 5.2 이전 색 blend 호환 경로를 적용합니다.
             if ((ColorBlendType == BlendTypes.ColorBlend.Normal
                 && AlphaBlendType == BlendTypes.AlphaBlend.Over)
                 || ColorBlendType == BlendTypes.ColorBlend.Add
@@ -825,34 +682,31 @@ namespace Live2D.Cubism.Rendering
             {
                 buffer.SetRenderTarget(previousOffscreen, passData.CameraDepthTextureHandle);
 
-                // Draw the mesh with the material.
+                // 현재 framebuffer에 기존 blend material draw를 기록합니다.
                 buffer.DrawMesh(Mesh, Matrix4x4.identity, DrawMaterial ?? Material, 0, 0, PropertyBlock);
 
                 return;
             }
 
-            // Set temporary render target.
+            // 중간 합성 결과를 받을 임시 target을 설정합니다.
             buffer.SetRenderTarget(passData.CommonTemporaryTextureHandle, passData.CameraDepthTextureHandle);
-            // Clear the render target.
+            // 중간 target의 이전 색을 지워 새 결과만 남깁니다.
             buffer.ClearRenderTarget(false, true, Color.clear);
 
-            // Draw the mesh with the material.
+            // 새 Drawable을 임시 target에 그립니다.
             buffer.DrawMesh(Mesh, Matrix4x4.identity, DrawMaterial ?? Material, 0, 0, PropertyBlock);
 
-            // Blit to previous offscreen.
+            // 임시 합성 결과를 이전 offscreen framebuffer로 되돌려 복사합니다.
             buffer.Blit(passData.CommonTemporaryTextureHandle, previousOffscreen);
         }
 
-        /// <summary>
-        /// Applies properties for offscreen rendering.
-        /// </summary>
-        /// <param name="previousOffscreen">Previous offscreen render texture.</param>
+        /// 입력: previousOffscreen(RenderTexture); 반환: 없음.
         private void ApplyPropertyForOffscreen(RenderTexture previousOffscreen)
         {
             var property = PropertyBlock;
             MeshRenderer.GetPropertyBlock(property);
 
-            // Write property.
+            // 갱신한 mask property를 renderer에 한 번 기록합니다.
             property.SetTexture(CubismShaderVariables.MainTexture, OffscreenFrameBuffer);
             property.SetTexture(CubismShaderVariables.RenderTexture, previousOffscreen);
             property.SetColor(CubismShaderVariables.MultiplyColor, MultiplyColor);
@@ -865,15 +719,12 @@ namespace Live2D.Cubism.Rendering
             MeshRenderer.SetPropertyBlock(property);
         }
 
-        /// <summary>
-        /// Applies mask texture for rendering.
-        /// </summary>
-        /// <param name="maskTextureHandle">Texture handle for the mask texture.</param>
+        /// 입력: maskTextureHandle(TextureHandle); 반환: 없음.
         private void ApplyMask(TextureHandle maskTextureHandle)
         {
             MeshRenderer.GetPropertyBlock(PropertyBlock);
 
-            // Write property.
+            // 갱신한 blend property를 renderer에 한 번 기록합니다.
             PropertyBlock.SetTexture(CubismShaderVariables.MaskTexture, maskTextureHandle);
             if (DrawObjectType == CubismModelTypes.DrawObjectType.Drawable)
             {
@@ -884,9 +735,7 @@ namespace Live2D.Cubism.Rendering
             MeshRenderer.SetPropertyBlock(PropertyBlock);
         }
 
-        /// <summary>
-        /// Initializes masks if possible.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void TryInitializeMasks()
         {
             if (!RenderController.HasMask)
@@ -925,9 +774,7 @@ namespace Live2D.Cubism.Rendering
             }
         }
 
-        /// <summary>
-        /// Initializes the draw object based on its type.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         private void InitializeDrawObject()
         {
             switch (DrawObjectType)
@@ -950,9 +797,7 @@ namespace Live2D.Cubism.Rendering
             }
         }
 
-        /// <summary>
-        /// Called after all <see cref="CubismRenderer"/> are initialized.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         public void OnAfterAllRendererInitialize()
         {
             TryInitializeMasks();

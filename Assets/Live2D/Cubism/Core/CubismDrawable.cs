@@ -4,6 +4,7 @@
  * Use of this source code is governed by the Live2D Open Software license
  * that can be found at https://www.live2d.com/eula/live2d-open-software-license-agreement_en.html.
  */
+// 네이티브 Cubism 모델의 drawable 한 개를 Unity GameObject와 연결하는 프록시입니다.
 
 
 using Live2D.Cubism.Core.Unmanaged;
@@ -14,25 +15,18 @@ using UnityEngine;
 
 namespace Live2D.Cubism.Core
 {
-    /// <summary>
-    /// Single <see cref="CubismModel"/> drawable.
-    /// </summary>
     [CubismDontMoveOnReimport]
     public sealed class CubismDrawable : MonoBehaviour
     {
         #region Factory Methods
 
-        /// <summary>
-        /// Creates drawables for a <see cref="CubismModel"/>.
-        /// </summary>
-        /// <param name="unmanagedModel">Handle to unmanaged model.</param>
-        /// <returns>Drawables root.</returns>
+        /// 입력: unmanagedModel(CubismUnmanagedModel); 반환: GameObject.
         internal static GameObject CreateDrawables(CubismUnmanagedModel unmanagedModel)
         {
             var root = new GameObject("Drawables");
 
 
-            // Create drawables.
+            // native drawable 수만큼 Unity 프록시를 만들어 루트 아래에 연결합니다.
             var unmanagedDrawables = unmanagedModel.Drawables;
             var buffer = new CubismDrawable[unmanagedDrawables.Count];
 
@@ -56,74 +50,50 @@ namespace Live2D.Cubism.Core
         #endregion
 
 
-        /// <summary>
-        /// Unmanaged drawables from unmanaged model.
-        /// </summary>
         private CubismUnmanagedDrawables UnmanagedDrawables { get; set; }
 
 
-        /// <summary>
-        /// <see cref="UnmanagedIndex"/> backing field.
-        /// </summary>
         [SerializeField, HideInInspector]
         private int _unmanagedIndex = -1;
 
-        /// <summary>
-        /// Position in unmanaged arrays.
-        /// </summary>
         internal int UnmanagedIndex
         {
             get { return _unmanagedIndex; }
             private set { _unmanagedIndex = value; }
         }
 
-        /// <summary>
-        /// Parent Part Position in unmanaged arrays.
-        /// </summary>
         public int UnmanagedParentIndex
         {
             get { return UnmanagedDrawables.ParentPartIndices[UnmanagedIndex]; }
         }
 
-        /// <summary>
-        /// Copy of Id.
-        /// </summary>
         public string Id
         {
             get
             {
-                // Pull data.
+                // native drawable 배열에서 현재 인덱스의 ID를 읽습니다.
                 return UnmanagedDrawables.Ids[UnmanagedIndex];
             }
         }
 
-        /// <summary>
-        /// Texture UnmanagedIndex.
-        /// </summary>
         public int TextureIndex
         {
             get
             {
-                // Pull data.
+                // native drawable 배열에서 현재 인덱스의 texture 번호를 읽습니다.
                 return UnmanagedDrawables.TextureIndices[UnmanagedIndex];
             }
         }
 
-        /// <summary>
-        /// <see cref="MultiplyColor"/> backing field.
-        /// </summary>
         private Color _multiplyColor;
 
-        /// <summary>
-        /// Copy of MultiplyColor.
-        /// </summary>
         public Color MultiplyColor
         {
             get
             {
                 var index = UnmanagedIndex * 4;
 
-                // Pull data.
+                // native RGBA 값을 임시 Color에 채웁니다.
                 _multiplyColor.r = UnmanagedDrawables.MultiplyColors[index];
                 _multiplyColor.g = UnmanagedDrawables.MultiplyColors[index + 1];
                 _multiplyColor.b = UnmanagedDrawables.MultiplyColors[index + 2];
@@ -133,21 +103,15 @@ namespace Live2D.Cubism.Core
             }
         }
 
-        /// <summary>
-        /// <see cref="ScreenColor"/> backing field.
-        /// </summary>
         public Color _screenColor;
 
-        /// <summary>
-        /// Copy of ScreenColor.
-        /// </summary>
         public Color ScreenColor
         {
             get
             {
                 var index = UnmanagedIndex * 4;
 
-                // Pull data.
+                // native RGBA 값을 임시 Color에 채웁니다.
                 _screenColor.r = UnmanagedDrawables.ScreenColors[index];
                 _screenColor.g = UnmanagedDrawables.ScreenColors[index + 1];
                 _screenColor.b = UnmanagedDrawables.ScreenColors[index + 2];
@@ -157,21 +121,15 @@ namespace Live2D.Cubism.Core
             }
         }
 
-        /// <summary>
-        /// Index of Parent Part.
-        /// </summary>
         public int ParentPartIndex
         {
             get
             {
-                // Pull data.
+                // native 배열에서 부모 Part 인덱스를 읽습니다.
                 return UnmanagedDrawables.ParentPartIndices[UnmanagedIndex];
             }
         }
 
-        /// <summary>
-        /// Copy of the masks.
-        /// </summary>
         public CubismDrawable[] Masks
         {
             get
@@ -181,12 +139,12 @@ namespace Live2D.Cubism.Core
                     .Drawables;
 
 
-                // Get addresses.
+                // native mask 인덱스 배열의 주소와 길이를 가져옵니다.
                 var counts = UnmanagedDrawables.MaskCounts;
                 var indices = UnmanagedDrawables.Masks;
 
 
-                // Pull data.
+                // mask 인덱스를 Unity Drawable 프록시 참조로 변환합니다.
                 var buffer = new CubismDrawable[counts[UnmanagedIndex]];
 
 
@@ -212,19 +170,16 @@ namespace Live2D.Cubism.Core
             }
         }
 
-        /// <summary>
-        /// Copy of vertex positions.
-        /// </summary>
         public Vector3[] VertexPositions
         {
             get
             {
-                // Get addresses.
+                // native 정점 좌표 배열의 주소와 길이를 가져옵니다.
                 var counts = UnmanagedDrawables.VertexCounts;
                 var positions = UnmanagedDrawables.VertexPositions;
 
 
-                // Pull data.
+                // native x/y 좌표를 Unity Vector3 배열로 복사합니다.
                 var buffer = new Vector3[counts[UnmanagedIndex]];
 
 
@@ -242,30 +197,17 @@ namespace Live2D.Cubism.Core
         }
 
 
-        /// <summary>
-        /// Reads the current vertex positions straight into <paramref name="destination"/>
-        /// without the managed-array allocation of <see cref="VertexPositions"/>.
-        /// Only x/y are written; z is preserved for callers that store sort depth there.
-        /// Returns the vertex count read, or -1 when the unmanaged data does not match
-        /// the expected shape (caller should treat the model as changed).
-        /// </summary>
+        /// 입력: destination(Vector3*), capacity(int); 반환: int.
         internal unsafe int ReadVertexPositionsInto(Vector3* destination, int capacity)
         {
             return ReadVertexPositionsInto(destination, capacity, out _, out _, out _);
         }
 
-
-        /// <summary>
-        /// <see cref="ReadVertexPositionsInto(Vector3*,int)"/> that also reports whether
-        /// any value actually differs from what <paramref name="destination"/> held, and
-        /// the axis-aligned extent of what was read.
-        /// The core raises its dirty flag whenever it re-evaluated a drawable, which is
-        /// not the same as the drawable having moved; comparing during the copy costs
-        /// nothing extra and lets callers skip uploads and mask re-renders. The extent
-        /// rides along for the same reason: the vertices are already in registers.
-        /// <paramref name="minimum"/> and <paramref name="maximum"/> are only meaningful
-        /// when the return value is positive.
-        /// </summary>
+        /// 위와 같되 destination이 이미 갖고 있던 값과 달라졌는지, 그리고 읽은 정점의 AABB도 알려줍니다.
+        /// 코어는 재평가한 Drawable에 더티를 세우지 실제로 움직였는지로 세우지 않으므로,
+        /// 복사하면서 비교해두면 업로드와 마스크 재렌더를 건너뛸 수 있습니다.
+        /// AABB도 같은 이유로 함께 냅니다. 정점이 이미 레지스터에 있습니다.
+        /// minimum·maximum은 반환값이 양수일 때만 유효합니다.
         internal unsafe int ReadVertexPositionsInto(Vector3* destination, int capacity, out bool changed, out Vector2 minimum, out Vector2 maximum)
         {
             changed = false;
@@ -273,7 +215,14 @@ namespace Live2D.Cubism.Core
             maximum = Vector2.zero;
 
             var index = UnmanagedIndex;
-            var positionViews = UnmanagedDrawables.VertexPositions;
+            var drawables = UnmanagedDrawables;
+
+            if (drawables == null)
+            {
+                return -1;
+            }
+
+            var positionViews = drawables.VertexPositions;
 
             if (positionViews == null || index < 0 || index >= positionViews.Length)
             {
@@ -281,10 +230,9 @@ namespace Live2D.Cubism.Core
             }
 
             var positions = positionViews[index];
-            var count = UnmanagedDrawables.VertexCounts[index];
+            var count = drawables.VertexCounts[index];
 
-            // Zero-vertex drawables have no view to read (IsValid is false for
-            // empty views); that is a valid state, not a shape mismatch.
+            // 정점이 0개인 drawable은 빈 native view라 읽을 수 없지만, 배열 크기 오류가 아닌 유효한 상태입니다.
             if (count == 0)
             {
                 return 0;
@@ -325,11 +273,7 @@ namespace Live2D.Cubism.Core
             return count;
         }
 
-
-        /// <summary>
-        /// Managed-array overload of <see cref="ReadVertexPositionsInto(Vector3*,int)"/>
-        /// for callers that keep a reusable scratch buffer instead of native memory.
-        /// </summary>
+        /// 재사용 스크래치 배열로 정점을 읽는 관리 배열 오버로드. 읽은 정점 수, 실패 시 -1.
         internal unsafe int ReadVertexPositionsInto(Vector3[] destination)
         {
             if (destination == null || destination.Length < 1)
@@ -343,19 +287,79 @@ namespace Live2D.Cubism.Core
             }
         }
 
-        /// <summary>
-        /// Copy of vertex texture coordinates.
-        /// </summary>
+        /// 입력: center(out Vector3), size(out Vector2); 반환: bool.
+        public bool TryGetVertexBounds(out Vector3 center, out Vector2 size)
+        {
+            center = default;
+            size = default;
+
+            var drawables = UnmanagedDrawables;
+            var index = UnmanagedIndex;
+            if (drawables == null)
+            {
+                return false;
+            }
+
+            var positionViews = drawables.VertexPositions;
+            var counts = drawables.VertexCounts;
+            if (positionViews == null || counts == null ||
+                index < 0 || index >= positionViews.Length || index >= counts.Length)
+            {
+                return false;
+            }
+
+            var positions = positionViews[index];
+            var count = counts[index];
+            if (count <= 0 || !positions.IsValid || positions.Length < count * 2)
+            {
+                return false;
+            }
+
+            float minX = positions[0];
+            float maxX = minX;
+            float minY = positions[1];
+            float maxY = minY;
+            if (!IsFinite(minX) || !IsFinite(minY))
+            {
+                return false;
+            }
+
+            for (var i = 1; i < count; ++i)
+            {
+                float x = positions[(i * 2) + 0];
+                float y = positions[(i * 2) + 1];
+                if (!IsFinite(x) || !IsFinite(y))
+                {
+                    return false;
+                }
+
+                minX = Mathf.Min(minX, x);
+                maxX = Mathf.Max(maxX, x);
+                minY = Mathf.Min(minY, y);
+                maxY = Mathf.Max(maxY, y);
+            }
+
+            center = new Vector3((minX + maxX) * 0.5f, (minY + maxY) * 0.5f, 0f);
+            size = new Vector2(maxX - minX, maxY - minY);
+            return true;
+        }
+
+        /// 입력: value(float); 반환: bool.
+        private static bool IsFinite(float value)
+        {
+            return !float.IsNaN(value) && !float.IsInfinity(value);
+        }
+
         public Vector2[] VertexUvs
         {
             get
             {
-                // Get addresses.
+                // native UV 배열의 주소와 길이를 가져옵니다.
                 var counts = UnmanagedDrawables.VertexCounts;
                 var uvs = UnmanagedDrawables.VertexUvs;
 
 
-                // Pull data.
+                // native UV를 Unity Vector2 배열로 복사합니다.
                 var buffer = new Vector2[counts[UnmanagedIndex]];
 
 
@@ -372,19 +376,16 @@ namespace Live2D.Cubism.Core
             }
         }
 
-        /// <summary>
-        /// Copy of triangle indices.
-        /// </summary>
         public int[] Indices
         {
             get
             {
-                // Get addresses.
+                // native 삼각형 인덱스 배열의 주소와 길이를 가져옵니다.
                 var counts = UnmanagedDrawables.IndexCounts;
                 var indices = UnmanagedDrawables.Indices;
 
 
-                // Pull data.
+                // native 인덱스를 관리 배열로 복사합니다.
                 var buffer = new int[counts[UnmanagedIndex]];
 
 
@@ -399,128 +400,100 @@ namespace Live2D.Cubism.Core
         }
 
 
-        /// <summary>
-        /// True if double-sided.
-        /// </summary>
         public bool IsDoubleSided
         {
             get
             {
-                // Get address.
+                // native 양면 렌더링 플래그 주소를 가져옵니다.
                 var flags = UnmanagedDrawables.ConstantFlags;
 
 
-                // Pull data.
+                // 현재 drawable의 양면 렌더링 플래그를 읽습니다.
                 return flags[UnmanagedIndex].HasIsDoubleSidedFlag();
             }
         }
 
-        /// <summary>
-        /// True if masking is requested.
-        /// </summary>
         public bool IsMasked
         {
             get
             {
-                // Get address.
+                // native 마스크 개수 주소를 가져옵니다.
                 var counts = UnmanagedDrawables.MaskCounts;
 
 
-                // Pull data.
+                // 현재 drawable의 마스크 개수를 읽습니다.
                 return counts[UnmanagedIndex] > 0;
             }
         }
 
-        /// <summary>
-        /// True if inverted mask.
-        /// </summary>
         public bool IsInverted
         {
             get
             {
-                // Get address.
+                // native 반전 마스크 플래그 주소를 가져옵니다.
                 var flags = UnmanagedDrawables.ConstantFlags;
 
 
-                // Pull data.
+                // 현재 drawable의 반전 마스크 플래그를 읽습니다.
                 return flags[UnmanagedIndex].HasIsInvertedMaskFlag();
             }
         }
 
-        /// <summary>
-        /// True if additive blending is requested.
-        /// </summary>
         public bool BlendAdditive
         {
             get
             {
-                // Get address.
+                // native 가산 블렌드 플래그 주소를 가져옵니다.
                 var flags = UnmanagedDrawables.ConstantFlags;
 
 
-                // Pull data.
+                // 현재 drawable의 가산 블렌드 플래그를 읽습니다.
                 return flags[UnmanagedIndex].HasBlendAdditiveFlag();
             }
         }
 
-        /// <summary>
-        /// True if multiply blending is setd.
-        /// </summary>
         public bool MultiplyBlend
         {
             get
             {
-                // Get address.
+                // native 곱셈 블렌드 플래그 주소를 가져옵니다.
                 var flags = UnmanagedDrawables.ConstantFlags;
 
 
-                // Pull data.
+                // 현재 drawable의 곱셈 블렌드 플래그를 읽습니다.
                 return flags[UnmanagedIndex].HasBlendMultiplicativeFlag();
             }
         }
 
         #region Cubism 5.3
 
-        /// <summary>
-        /// Gets the color blend mode of the drawable.
-        /// </summary>
         public BlendTypes.ColorBlend ColorBlend
         {
             get
             {
-                // Pull data.
+                // native blend mode의 색상 채널 값을 읽습니다.
                 return (BlendTypes.ColorBlend)(UnmanagedDrawables.BlendModes[UnmanagedIndex] & 0xFF);
             }
         }
 
-        /// <summary>
-        /// Gets the alpha blend mode of the drawable.
-        /// </summary>
         public BlendTypes.AlphaBlend AlphaBlend
         {
             get
             {
-                // Pull data.
+                // native blend mode의 알파 채널 값을 읽습니다.
                 return (BlendTypes.AlphaBlend)((UnmanagedDrawables.BlendModes[UnmanagedIndex] >> 8) & 0xFF);
             }
         }
 
         #endregion
 
-        /// <summary>
-        /// Revives instance.
-        /// </summary>
-        /// <param name="unmanagedModel">Handle to unmanaged model.</param>
+        /// 입력: unmanagedModel(CubismUnmanagedModel); 반환: 없음.
         internal void Revive(CubismUnmanagedModel unmanagedModel)
         {
             UnmanagedDrawables = unmanagedModel.Drawables;
         }
 
-        /// <summary>
-        /// Restores instance to initial state.
-        /// </summary>
-        /// <param name="unmanagedModel">Handle to unmanaged model.</param>
-        /// <param name="unmanagedIndex">Position in unmanaged arrays.</param>
+        /// 입력: unmanagedModel(CubismUnmanagedModel), unmanagedIndex(int); 반환: 없음.
         private void Reset(CubismUnmanagedModel unmanagedModel, int unmanagedIndex)
         {
             Revive(unmanagedModel);

@@ -245,12 +245,10 @@ namespace Live2D.Cubism.Core
                 data.RenderOrder = renderOrders[i];
 
 
-                // Read vertex positions only if necessary. The dirty flag is left alone
-                // when the copy is suppressed: the owner still needs it to know it must
-                // pull the vertices from the drawable itself.
+                // 정점 위치는 더티일 때만 읽습니다. 복사를 억제해도 더티 플래그는 그대로 둡니다.
+                // 소유자가 Drawable에서 직접 읽어야 한다는 신호로 계속 필요합니다.
                 if (data.AreVertexPositionsDirty && !data.SuppressManagedVertexCopy)
                 {
-                    // Copy vertex positions.
                     fixed (Vector3* dataVertexPositions = data.VertexPositions)
                     {
                         for (var v = 0; v < data.VertexPositions.Length; ++v)
@@ -262,9 +260,8 @@ namespace Live2D.Cubism.Core
                 }
 
 
-                // The core raises the blend color flag independently of the vertex
-                // position flag. Reading colors under the vertex early-out drops
-                // color-only updates for drawables that did not deform this frame.
+                // 코어는 블렌드 컬러 플래그를 정점 플래그와 독립으로 세웁니다.
+                // 정점 조기탈출 아래에서 읽으면 변형 없는 프레임의 색 변경이 유실됩니다.
                 if (!data.IsBlendColorDirty)
                 {
                     continue;

@@ -4,6 +4,7 @@
  * Use of this source code is governed by the Live2D Open Software license
  * that can be found at https://www.live2d.com/eula/live2d-open-software-license-agreement_en.html.
  */
+// 한 animation layer의 Playable 연결, 재생 motion 목록, fade 상태와 시작·종료 callback을 관리합니다.
 
 using Live2D.Cubism.Framework.MotionFade;
 using System;
@@ -14,71 +15,34 @@ using UnityEngine.Playables;
 
 namespace Live2D.Cubism.Framework.Motion
 {
-    /// <summary>
-    /// Cubism motion layer.
-    /// </summary>
     public class CubismMotionLayer : ICubismFadeState
     {
         #region Action
 
-        /// <summary>
-        /// Action animation end handler.
-        /// </summary>
         public Action<int, int> AnimationBeginHandler;
 
-        /// <summary>
-        /// Action animation end handler.
-        /// </summary>
         public Action<int, int> AnimationEndHandler;
 
         #endregion
 
         #region Variable
 
-        /// <summary>
-        /// Playable output.
-        /// </summary>
         public AnimationMixerPlayable PlayableOutput { get; private set; }
 
-        /// <summary>
-        /// Playable output.
-        /// </summary>
         private PlayableGraph _playableGraph;
 
-        /// <summary>
-        /// Cubism playing motions.
-        /// </summary>
         private List<CubismFadePlayingMotion> _playingMotions;
 
-        /// <summary>
-        /// Cubism playing motions.
-        /// </summary>
         private CubismMotionState _motionState;
 
-        /// <summary>
-        /// List of cubism fade motion.
-        /// </summary>
         private CubismFadeMotionList _cubismFadeMotionList;
 
-        /// <summary>
-        /// Layer index.
-        /// </summary>
         private int _layerIndex;
 
-        /// <summary>
-        /// Layer weight.
-        /// </summary>
         private float _layerWeight;
 
-        /// <summary>
-        /// Animation is finished.
-        /// </summary>
         private bool _isFinished;
 
-        /// <summary>
-        /// Is finished.
-        /// </summary>
-        /// <returns>True if the animation is finished, false otherwise.</returns>
         public bool IsFinished
         {
             get { return _isFinished; }
@@ -88,65 +52,45 @@ namespace Live2D.Cubism.Framework.Motion
 
         #region Fade State Interface
 
-        /// <summary>
-        /// Get cubism playing motion list.
-        /// </summary>
-        /// <returns>Cubism playing motion list.</returns>
+        /// 입력: 없음; 반환: List<CubismFadePlayingMotion>.
         public List<CubismFadePlayingMotion> GetPlayingMotions()
         {
             return _playingMotions;
         }
 
-        /// <summary>
-        /// Is default state.
-        /// </summary>
-        /// <returns><see langword="true"/> State is default; <see langword="false"/> otherwise.</returns>
+        /// 입력: 없음; 반환: bool.
         public bool IsDefaultState()
         {
             return false;
         }
 
-        /// <summary>
-        /// Get layer weight.
-        /// </summary>
-        /// <returns>Layer weight.</returns>
+        /// 입력: 없음; 반환: float.
         public float GetLayerWeight()
         {
             return _layerWeight;
         }
 
-        /// <summary>
-        /// Get state transition finished.
-        /// </summary>
-        /// <returns><see langword="true"/> State transition is finished; <see langword="false"/> otherwise.</returns>
+        /// 입력: 없음; 반환: bool.
         public bool GetStateTransitionFinished()
         {
             return true;
         }
 
-        /// <summary>
-        /// Set state transition finished.
-        /// </summary>
-        /// <param name="isFinished">State is finished.</param>
+        /// 입력: isFinished(bool); 반환: 없음.
         public void SetStateTransitionFinished(bool isFinished) {}
 
-        /// <summary>
-        /// Stop animation.
-        /// </summary>
-        /// <param name="index">Playing motion index.</param>
+        /// 입력: index(int); 반환: 없음.
         public void StopAnimation(int index)
         {
-            // Remove from playing motion list.
+            // 재생 중 motion 목록에서 입력 인덱스의 항목을 제거합니다.
             _playingMotions.RemoveAt(index);
         }
 
 
-        /// <summary>
-        /// Stop animation.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         public void StopAnimationClip()
         {
-            // Remove from motion state list.
+            // 상태 목록에서 재생이 끝난 motion state를 제거합니다.
             if (_motionState == null)
             {
                 return;
@@ -166,12 +110,7 @@ namespace Live2D.Cubism.Framework.Motion
 
         #region Function
 
-        /// <summary>
-        /// Initialize motion layer.
-        /// </summary>
-        /// <param name="playableGraph">.</param>
-        /// <param name="fadeMotionList">.</param>
-        /// <param name="layerWeight">.</param>
+        /// 입력: playableGraph(PlayableGraph), fadeMotionList(CubismFadeMotionList), layerIndex(int), layerWeight(float); 반환: CubismMotionLayer.
         public static CubismMotionLayer CreateCubismMotionLayer(PlayableGraph playableGraph, CubismFadeMotionList fadeMotionList, int layerIndex, float layerWeight = 1.0f)
         {
             var ret = new CubismMotionLayer();
@@ -188,11 +127,7 @@ namespace Live2D.Cubism.Framework.Motion
             return ret;
         }
 
-        /// <summary>
-        /// Create fade playing motion.
-        /// </summary>
-        /// <param name="clip">Animator clip.</param>
-        /// <param name="speed">Animation speed.</param>
+        /// 입력: clip(AnimationClip), isLooping(bool), speed(float); 반환: CubismFadePlayingMotion.
         private CubismFadePlayingMotion CreateFadePlayingMotion(AnimationClip clip, bool isLooping, float speed = 1.0f)
         {
             var ret = new CubismFadePlayingMotion();
@@ -243,12 +178,7 @@ namespace Live2D.Cubism.Framework.Motion
             return ret;
         }
 
-        /// <summary>
-        /// Play animation.
-        /// </summary>
-        /// <param name="clip">Animation clip.</param>
-        /// <param name="isLoop">Animation is loop.</param>
-        /// <param name="speed">Animation speed.</param>
+        /// 입력: clip(AnimationClip), isLoop(bool), speed(float); 반환: 없음.
         public void PlayAnimation(AnimationClip clip, bool isLoop = true, float speed = 1.0f)
         {
             if (_motionState != null)
@@ -256,7 +186,7 @@ namespace Live2D.Cubism.Framework.Motion
                 _playableGraph.Disconnect(_motionState.ClipMixer, 0);
             }
 
-            // Create cubism motion state.
+            // 입력 clip의 재생 상태와 Playable을 만들고 layer 상태 목록에 연결합니다.
             _motionState = CubismMotionState.CreateCubismMotionState(_playableGraph, clip, isLoop, speed);
 
 
@@ -269,7 +199,7 @@ namespace Live2D.Cubism.Framework.Motion
             PlayableOutput.SetInputWeight(0, 1.0f);
 
 
-            // Set last motion end time and fade in start time;
+            // 이전 motion 종료 시각과 새 motion fade-in 시작 시각을 현재 시간으로 기록합니다.
             if ((_playingMotions.Count > 0) && (_playingMotions[_playingMotions.Count - 1].Motion != null))
             {
                 var motion = _playingMotions[_playingMotions.Count - 1];
@@ -299,16 +229,14 @@ namespace Live2D.Cubism.Framework.Motion
                 _playingMotions[_playingMotions.Count - 1] = motion;
             }
 
-            // Create fade playing motion.
+            // 생성한 상태를 fade 계산에 필요한 재생 motion 정보로 변환합니다.
             var playingMotion = CreateFadePlayingMotion(clip, isLoop, speed);
             _playingMotions.Add(playingMotion);
 
             _isFinished = false;
         }
 
-        /// <summary>
-        /// Stop all animation.
-        /// </summary>
+        /// 입력: 없음; 반환: 없음.
         public void StopAllAnimation()
         {
             for(var i = _playingMotions.Count - 1; i >= 0; --i)
@@ -317,23 +245,16 @@ namespace Live2D.Cubism.Framework.Motion
             }
         }
 
-        /// <summary>
-        /// Set layer weight.
-        /// </summary>
-        /// <param name="weight">Layer weight.</param>
+        /// 입력: weight(float); 반환: 없음.
         public void SetLayerWeight(float weight)
         {
             _layerWeight = weight;
         }
 
-        /// <summary>
-        /// Set state speed.
-        /// </summary>
-        /// <param name="index">index of playing motion list.</param>
-        /// <param name="speed">Animation speed.</param>
+        /// 입력: index(int), speed(float); 반환: 없음.
         public void SetStateSpeed(int index, float speed)
         {
-            // Fail silently...
+            // 요청 인덱스가 현재 재생 목록 밖이면 변경할 상태가 없으므로 반환합니다.
             if(index < 0)
             {
                 return;
@@ -343,8 +264,8 @@ namespace Live2D.Cubism.Framework.Motion
             var previousSpeed = playingMotionData.Speed;
             playingMotionData.Speed = speed;
 
-            // Speed 0 pauses playback. Rescaling the remaining time or the clip
-            // duration by it yields infinity, so leave both at their current values.
+            // speed 0은 일시정지입니다. 남은 시간과 클립 길이를 0으로 나누면 무한대가
+            // 되므로 두 값을 현재 상태로 둡니다.
             if (speed > 0.0f && playingMotionData.EndTime >= 0.0f && previousSpeed > 0.0f)
             {
                 playingMotionData.EndTime = Time.time + (playingMotionData.EndTime - Time.time) * previousSpeed / speed;
@@ -360,14 +281,10 @@ namespace Live2D.Cubism.Framework.Motion
             }
         }
 
-        /// <summary>
-        /// Set state is loop.
-        /// </summary>
-        /// <param name="index">index of playing motion list.</param>
-        /// <param name="isLoop">Animation is loop.</param>
+        /// 입력: index(int), isLoop(bool); 반환: 없음.
         public void SetStateIsLoop(int index, bool isLoop)
         {
-            // Fail silently...
+            // 요청 인덱스가 현재 재생 목록 밖이면 변경할 상태가 없으므로 반환합니다.
             if(index < 0)
             {
                 return;
@@ -385,6 +302,7 @@ namespace Live2D.Cubism.Framework.Motion
 
         #endregion
 
+        /// 입력: 없음; 반환: 없음.
         public void Update()
         {
             var isFinished = true;

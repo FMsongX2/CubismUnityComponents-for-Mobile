@@ -74,14 +74,9 @@ namespace Live2D.Cubism.Core
         /// </summary>
         public Vector3[] VertexPositions { get; internal set; }
 
-        /// <summary>
-        /// When set, <see cref="ArrayExtensionMethods.ReadFrom(CubismDynamicDrawableData[], Unmanaged.CubismUnmanagedModel)"/>
-        /// leaves <see cref="VertexPositions"/> untouched and only maintains the dirty
-        /// flags. A consumer that reads vertices straight from the drawable (the batched
-        /// renderer) sets this so the per-vertex managed copy is not paid twice.
-        /// A field rather than a property because the core update may run on a worker
-        /// thread while the owner writes it from the main thread.
-        /// </summary>
+        /// 설정 시 ReadFrom이 VertexPositions를 채우지 않고 더티 플래그만 유지합니다.
+        /// Drawable에서 정점을 직접 읽는 소비자(배치 렌더러)가 세워 관리 배열 복사를 두 번 내지 않게 합니다.
+        /// 코어 갱신이 워커 스레드에서 돌 수 있어 프로퍼티가 아닌 volatile 필드입니다.
         internal volatile bool SuppressManagedVertexCopy;
 
         /// <summary>
